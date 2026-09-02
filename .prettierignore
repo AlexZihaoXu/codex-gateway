@@ -1,0 +1,6 @@
+build/
+coverage/
+internal/dashboard/dist/
+node_modules/
+bun.lock
+go.sum

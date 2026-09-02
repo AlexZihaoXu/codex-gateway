@@ -1,0 +1,79 @@
+name: codex-gateway
+
+services:
+  gateway-dev:
+    profiles:
+      - dev
+    build:
+      context: .
+      target: development
+    image: codex-gateway:dev
+    init: true
+    command:
+      - sh
+      - -c
+      - >-
+        bun install --frozen-lockfile --ignore-scripts --concurrent-scripts 2 && exec bun run dev
+    ports:
+      - '127.0.0.1:${CODEX_GATEWAY_PORT:-11435}:5173'
+    environment:
+      DATA_DIR: /data/gateway
+      FIREBASE_ADMIN_EMAIL: ${FIREBASE_ADMIN_EMAIL:-}
+      FIREBASE_ALLOWED_EMAILS: ${FIREBASE_ALLOWED_EMAILS:-}
+      FIREBASE_API_KEY: ${FIREBASE_API_KEY:-}
+      FIREBASE_APP_ID: ${FIREBASE_APP_ID:-}
+      FIREBASE_AUTH_DOMAIN: ${FIREBASE_AUTH_DOMAIN:-}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      GOMAXPROCS: 2
+      HOME: /data/home
+      HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      PORT: 8080
+      VITE_HOST: 0.0.0.0
+    volumes:
+      - .:/src
+      - gateway-dev-modules:/src/node_modules
+      - gateway-dev-data:/data
+    cpus: 2.0
+    mem_limit: 2g
+
+  gateway:
+    profiles:
+      - prod
+    build:
+      context: .
+      target: production
+    image: codex-gateway:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${CODEX_GATEWAY_PORT:-11435}:8080'
+    environment:
+      DATA_DIR: /data/gateway
+      FIREBASE_ADMIN_EMAIL: ${FIREBASE_ADMIN_EMAIL:-}
+      FIREBASE_ALLOWED_EMAILS: ${FIREBASE_ALLOWED_EMAILS:-}
+      FIREBASE_API_KEY: ${FIREBASE_API_KEY:-}
+      FIREBASE_APP_ID: ${FIREBASE_APP_ID:-}
+      FIREBASE_AUTH_DOMAIN: ${FIREBASE_AUTH_DOMAIN:-}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      HOME: /data/home
+      HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: 8080
+    volumes:
+      - gateway-data:/data
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+volumes:
+  gateway-data:
+    name: codex-gateway-data
+  gateway-dev-data:
+    name: codex-gateway-dev-data
+  gateway-dev-modules:
+    name: codex-gateway-dev-modules

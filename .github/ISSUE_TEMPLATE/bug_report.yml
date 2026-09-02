@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible defect in Codex Gateway.
+title: 'fix: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove all credentials, private code, prompts, and responses before submitting.
+  - type: checkboxes
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed API keys, authentication data, prompts, responses, and private source code.
+          required: true
+  - type: textarea
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Provide the smallest deterministic sequence that demonstrates the problem.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Codex Gateway revision
+      placeholder: Commit SHA or release version
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Environment
+      placeholder: Windows 11 / Docker Desktop 4.x
+    validations:
+      required: true

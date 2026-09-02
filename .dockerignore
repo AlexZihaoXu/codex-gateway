@@ -1,0 +1,12 @@
+.git
+.github
+.husky
+build
+coverage
+data
+internal/dashboard/dist
+node_modules
+.env
+.env.*
+*.log
+*.sqlite*

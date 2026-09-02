@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a focused improvement to Codex Gateway.
+title: 'feat: '
+labels: [enhancement]
+body:
+  - type: checkboxes
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues for this request.
+          required: true
+  - type: textarea
+    attributes:
+      label: Problem
+      description: Describe the user problem or compatibility gap.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed outcome
+      description: What behavior would resolve the problem?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    attributes:
+      label: Security and compatibility impact
+      description: Note effects on authentication, stored data, quotas, OpenAI compatibility, or Docker operation.
