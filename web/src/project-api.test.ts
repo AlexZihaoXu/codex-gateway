@@ -177,6 +177,17 @@ describe('project management API client', () => {
         ],
         cached_input_tokens: 35,
         input_tokens: 200,
+        models: [
+          {
+            cached_input_tokens: 35,
+            input_tokens: 200,
+            model: 'gpt-5.6-sol',
+            output_tokens: 50,
+            reasoning_output_tokens: 13,
+            requests: 2,
+            total_tokens: 250,
+          },
+        ],
         output_tokens: 50,
         period_end: '2026-10-01T00:00:00Z',
         period_start: '2026-09-01T00:00:00Z',
@@ -226,6 +237,17 @@ describe('project management API client', () => {
       ],
       cachedInputTokens: 35,
       inputTokens: 200,
+      models: [
+        {
+          cachedInputTokens: 35,
+          inputTokens: 200,
+          model: 'gpt-5.6-sol',
+          outputTokens: 50,
+          reasoningOutputTokens: 13,
+          requests: 2,
+          totalTokens: 250,
+        },
+      ],
       outputTokens: 50,
       projects: [
         {

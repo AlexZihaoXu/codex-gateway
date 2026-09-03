@@ -226,6 +226,7 @@ func registerStandaloneSearch(api huma.API, projectService ProjectService, infer
 		}
 		if err := projectService.RecordUsage(ctx, projects.UsageRecord{
 			RequestID: result.RequestID, ProjectID: access.ProjectID, APIKeyID: access.APIKeyID,
+			Model: "codex-search",
 		}); err != nil {
 			return nil, huma.Error500InternalServerError("Unable to record search usage.")
 		}

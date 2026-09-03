@@ -446,12 +446,14 @@ func TestUsageSummaryAggregatesProjectsWithoutContent(t *testing.T) {
 	}
 	if err := service.RecordUsage(context.Background(), UsageRecord{
 		RequestID: "request-1", ProjectID: first.ID, APIKeyID: firstKey.Key.ID,
+		Model:       "gpt-5.6-sol",
 		InputTokens: 120, CachedInputTokens: 25, OutputTokens: 30, ReasoningOutputTokens: 9, TotalTokens: 150,
 	}); err != nil {
 		t.Fatalf("record usage: %v", err)
 	}
 	if err := service.RecordUsage(context.Background(), UsageRecord{
 		RequestID: "request-2", ProjectID: first.ID, APIKeyID: secondKey.Key.ID,
+		Model:       "gpt-5.6-luna",
 		InputTokens: 80, CachedInputTokens: 10, OutputTokens: 20, ReasoningOutputTokens: 4, TotalTokens: 100,
 	}); err != nil {
 		t.Fatalf("record usage: %v", err)
@@ -472,6 +474,10 @@ func TestUsageSummaryAggregatesProjectsWithoutContent(t *testing.T) {
 	}
 	if len(summary.APIKeys) != 2 || summary.APIKeys[0].APIKeyID != firstKey.Key.ID || summary.APIKeys[0].TotalTokens != 150 || summary.APIKeys[1].APIKeyID != secondKey.Key.ID || summary.APIKeys[1].TotalTokens != 100 {
 		t.Fatalf("unexpected API key usage: %#v", summary.APIKeys)
+	}
+	if len(summary.Models) != 2 || summary.Models[0].Model != "gpt-5.6-sol" || summary.Models[0].Requests != 1 || summary.Models[0].CachedInputTokens != 25 || summary.Models[0].ReasoningOutputTokens != 9 || summary.Models[0].TotalTokens != 150 ||
+		summary.Models[1].Model != "gpt-5.6-luna" || summary.Models[1].Requests != 1 || summary.Models[1].CachedInputTokens != 10 || summary.Models[1].ReasoningOutputTokens != 4 || summary.Models[1].TotalTokens != 100 {
+		t.Fatalf("unexpected model usage: %#v", summary.Models)
 	}
 }
 
@@ -501,6 +507,7 @@ func TestUsageRejectsInvalidOrDuplicateRecords(t *testing.T) {
 		{RequestID: "request-1", ProjectID: project.ID, APIKeyID: created.Key.ID, InputTokens: 1, CachedInputTokens: 2, OutputTokens: 1, TotalTokens: 2},
 		{RequestID: "request-1", ProjectID: project.ID, APIKeyID: created.Key.ID, InputTokens: 1, OutputTokens: 1, ReasoningOutputTokens: 2, TotalTokens: 2},
 		{RequestID: "request-1", ProjectID: project.ID, APIKeyID: created.Key.ID, InputTokens: 1, OutputTokens: 1, TotalTokens: 3},
+		{RequestID: "request-1", ProjectID: project.ID, APIKeyID: created.Key.ID, Model: string(make([]rune, maximumModelRunes+1)), InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
 	} {
 		if err := service.RecordUsage(context.Background(), record); !errors.Is(err, ErrInvalidUsage) {
 			t.Fatalf("expected ErrInvalidUsage, got %v", err)

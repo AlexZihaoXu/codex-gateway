@@ -19,6 +19,7 @@ import (
 const (
 	maximumProjectNameRunes  = 80
 	maximumAPIKeyNameRunes   = 80
+	maximumModelRunes        = 128
 	identifierBytes          = 16
 	apiKeySecretBytes        = 32
 	dashboardChatKeyPrefix   = "key_dashboard_"
@@ -100,10 +101,21 @@ type APIKeyUsage struct {
 	TotalTokens           int64
 }
 
+type ModelUsage struct {
+	Model                 string
+	Requests              int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+}
+
 type UsageRecord struct {
 	RequestID             string
 	ProjectID             string
 	APIKeyID              string
+	Model                 string
 	InputTokens           int64
 	CachedInputTokens     int64
 	OutputTokens          int64
@@ -116,6 +128,7 @@ type Usage struct {
 	PeriodEnd             time.Time
 	Projects              []ProjectUsage
 	APIKeys               []APIKeyUsage
+	Models                []ModelUsage
 	Requests              int64
 	InputTokens           int64
 	CachedInputTokens     int64
@@ -529,7 +542,12 @@ func (service *Service) RevokeAPIKey(ctx context.Context, id string) error {
 }
 
 func (service *Service) RecordUsage(ctx context.Context, record UsageRecord) error {
+	model := strings.TrimSpace(record.Model)
+	if model == "" {
+		model = "unknown"
+	}
 	if record.RequestID == "" || record.ProjectID == "" || record.APIKeyID == "" ||
+		!utf8.ValidString(model) || utf8.RuneCountInString(model) > maximumModelRunes ||
 		record.InputTokens < 0 || record.CachedInputTokens < 0 || record.OutputTokens < 0 ||
 		record.ReasoningOutputTokens < 0 || record.TotalTokens < 0 ||
 		record.CachedInputTokens > record.InputTokens || record.ReasoningOutputTokens > record.OutputTokens ||
@@ -555,12 +573,12 @@ func (service *Service) RecordUsage(ctx context.Context, record UsageRecord) err
 	}
 	result, err := service.database.ExecContext(ctx, `
 		INSERT INTO project_usage (
-			request_id, project_id, api_key_id, input_tokens, cached_input_tokens,
+			request_id, project_id, api_key_id, model, input_tokens, cached_input_tokens,
 			output_tokens, reasoning_output_tokens, total_tokens, created_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(request_id) DO NOTHING
-	`, record.RequestID, record.ProjectID, record.APIKeyID, record.InputTokens, record.CachedInputTokens,
+	`, record.RequestID, record.ProjectID, record.APIKeyID, model, record.InputTokens, record.CachedInputTokens,
 		record.OutputTokens, record.ReasoningOutputTokens, record.TotalTokens, service.clock().UTC().Unix())
 	if err != nil {
 		return fmt.Errorf("record project usage: %w", err)
@@ -595,7 +613,10 @@ func (service *Service) UsageSummary(ctx context.Context) (Usage, error) {
 	}
 	defer rows.Close()
 
-	usage := Usage{PeriodStart: periodStart, PeriodEnd: periodEnd, Projects: make([]ProjectUsage, 0), APIKeys: make([]APIKeyUsage, 0)}
+	usage := Usage{
+		PeriodStart: periodStart, PeriodEnd: periodEnd, Projects: make([]ProjectUsage, 0),
+		APIKeys: make([]APIKeyUsage, 0), Models: make([]ModelUsage, 0),
+	}
 	for rows.Next() {
 		var project ProjectUsage
 		if err := rows.Scan(
@@ -646,7 +667,6 @@ func (service *Service) UsageSummary(ctx context.Context) (Usage, error) {
 	if err != nil {
 		return Usage{}, fmt.Errorf("read API key usage: %w", err)
 	}
-	defer keyRows.Close()
 	for keyRows.Next() {
 		var key APIKeyUsage
 		if err := keyRows.Scan(
@@ -660,6 +680,38 @@ func (service *Service) UsageSummary(ctx context.Context) (Usage, error) {
 	}
 	if err := keyRows.Err(); err != nil {
 		return Usage{}, fmt.Errorf("iterate API key usage: %w", err)
+	}
+	if err := keyRows.Close(); err != nil {
+		return Usage{}, fmt.Errorf("close API key usage rows: %w", err)
+	}
+	modelRows, err := service.database.QueryContext(ctx, `
+		SELECT model, COUNT(request_id), COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(cached_input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_output_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		FROM project_usage
+		WHERE created_at >= ? AND created_at < ?
+		GROUP BY model
+		ORDER BY SUM(total_tokens) DESC, model
+	`, periodStart.Unix(), periodEnd.Unix())
+	if err != nil {
+		return Usage{}, fmt.Errorf("read model usage: %w", err)
+	}
+	defer modelRows.Close()
+	for modelRows.Next() {
+		var model ModelUsage
+		if err := modelRows.Scan(
+			&model.Model, &model.Requests, &model.InputTokens, &model.CachedInputTokens,
+			&model.OutputTokens, &model.ReasoningOutputTokens, &model.TotalTokens,
+		); err != nil {
+			return Usage{}, fmt.Errorf("decode model usage: %w", err)
+		}
+		usage.Models = append(usage.Models, model)
+	}
+	if err := modelRows.Err(); err != nil {
+		return Usage{}, fmt.Errorf("iterate model usage: %w", err)
+	}
+	if err := modelRows.Close(); err != nil {
+		return Usage{}, fmt.Errorf("close model usage rows: %w", err)
 	}
 	return usage, nil
 }
@@ -714,6 +766,7 @@ func (service *Service) initialize(ctx context.Context) error {
 			request_id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
 			api_key_id TEXT NOT NULL REFERENCES project_api_key(id) ON DELETE CASCADE,
+			model TEXT NOT NULL DEFAULT 'unknown' CHECK (length(model) BETWEEN 1 AND 128),
 			input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
 			cached_input_tokens INTEGER NOT NULL CHECK (cached_input_tokens >= 0),
 			output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
@@ -736,6 +789,7 @@ func (service *Service) initialize(ctx context.Context) error {
 	for _, statement := range []string{
 		"CREATE INDEX IF NOT EXISTS project_usage_period ON project_usage (project_id, created_at)",
 		"CREATE INDEX IF NOT EXISTS project_usage_api_key_period ON project_usage (api_key_id, created_at)",
+		"CREATE INDEX IF NOT EXISTS project_usage_model_period ON project_usage (model, created_at)",
 	} {
 		if _, err := service.database.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize project database indexes: %w", err)
@@ -865,6 +919,7 @@ func insertUsageLimits(ctx context.Context, transaction *sql.Tx, projectID strin
 func (service *Service) ensureUsageColumns(ctx context.Context) error {
 	columns := map[string]string{
 		"api_key_id":              "TEXT",
+		"model":                   "TEXT NOT NULL DEFAULT 'unknown' CHECK (length(model) BETWEEN 1 AND 128)",
 		"cached_input_tokens":     "INTEGER NOT NULL DEFAULT 0 CHECK (cached_input_tokens >= 0)",
 		"reasoning_output_tokens": "INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_output_tokens >= 0)",
 		"total_tokens":            "INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0)",

@@ -1,9 +1,9 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 ARG BUN_VERSION=1.3.6
-ARG GO_VERSION=1.24.5
+ARG GO_VERSION=1.27.1
 
-FROM oven/bun:${BUN_VERSION}-slim AS bun-base
+FROM oven/bun:${BUN_VERSION}-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS bun-base
 WORKDIR /src
 
 FROM bun-base AS web-dependencies
@@ -14,7 +14,7 @@ FROM web-dependencies AS web-build
 COPY web ./web
 RUN bun run build:web
 
-FROM golang:${GO_VERSION}-bookworm AS go-toolchain
+FROM golang:${GO_VERSION}-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-toolchain
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 
 FROM go-toolchain AS go-build
@@ -66,7 +66,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
 
 CMD ["bun", "run", "dev"]
 
-FROM debian:bookworm-slim AS production
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS production
 ENV DATA_DIR=/data/gateway \
     HOME=/data/home \
     HOST=0.0.0.0 \

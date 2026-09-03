@@ -40,7 +40,7 @@ Then open:
 - Google-only Firebase authentication with an administrator account, an explicit email allowlist, and persistent local sessions
 - Project-scoped, revocable API keys whose plaintext is shown only at creation
 - Multiple per-project token limits across minute, hourly, daily, weekly, and monthly windows
-- Detailed input, cached-input, output, reasoning-output, and total-token accounting
+- Detailed input, cached-input, output, reasoning-output, and total-token accounting by model, project, and API key
 - A keyless, administrator-session Chat playground with project-scoped usage tracking and owner-scoped SQLite history
 - A HeroUI dashboard with Overview, Projects, API keys, Usage, Chat, and Settings tabs
 - Generated OpenAPI 3.1 schemas and a Swagger UI reference at `/doc`
@@ -179,7 +179,7 @@ Dashboard sections have stable paths: `/chat`, `/overview`, `/projects`, `/api-k
 
 Requirements:
 
-- Go 1.24.5 or later in the Go 1.24 release line
+- Go 1.27.1 or later in the Go 1.27 release line
 - Bun 1.3.6 or later
 - Docker Desktop or Docker Engine with Compose
 
@@ -229,6 +229,7 @@ bun run verify
 
 | Command                    | Purpose                                                   |
 | -------------------------- | --------------------------------------------------------- |
+| `bun run audit`            | Check Go and web dependencies for published advisories    |
 | `bun run dev`              | Run the Go API and Vite dashboard                         |
 | `bun run test:compose`     | Validate the development and production Compose profiles  |
 | `bun run test:container`   | Check a running development container and its API surface |
@@ -299,10 +300,12 @@ GET  /openapi.yaml
 ## Security posture
 
 - Compose publishes the gateway on `127.0.0.1` by default.
+- To expose it only through Tailscale, set `CODEX_GATEWAY_BIND_ADDRESS` to the server's Tailscale IP before starting Compose.
 - The production container runs as an unprivileged user with all Linux capabilities dropped.
 - The container root filesystem is read-only; persistent state is restricted to `/data`.
 - Dashboard access requires a verified Firebase ID token created through Google sign-in and an email present in the configured administrator allowlist.
 - Firebase ID tokens are exchanged for an opaque, hashed, HTTP-only local session; Firebase tokens are not retained.
+- Browser responses set a restrictive CSP, deny framing and MIME sniffing, suppress referrers, and disable caching for API responses.
 - API key plaintext is displayed once; only a SHA-256 hash and identifying prefix are stored.
 - Codex OAuth credentials are stored atomically in the gateway data volume with owner-only file permissions and are never exposed through the API.
 - Public compatibility request and response bodies are not retained. Completed Dashboard Chat transcripts are stored in owner-scoped SQLite history until deleted.
@@ -314,4 +317,4 @@ Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.m
 
 Contributor, issue, pull-request, security, dependency-update, and CI templates are included so the repository can be published cleanly.
 
-No open-source license has been selected. The package is marked `UNLICENSED`, and all rights remain reserved until a license file is deliberately added.
+Codex Gateway is available under the [MIT License](LICENSE). You may use, modify, and redistribute it while retaining the license and copyright notice.

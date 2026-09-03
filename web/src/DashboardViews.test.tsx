@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { APIKeysView, ProjectsView, SettingsView, UsageView } from './DashboardViews';
@@ -270,6 +270,17 @@ describe('dashboard management views', () => {
         ],
         cached_input_tokens: 35,
         input_tokens: 200,
+        models: [
+          {
+            cached_input_tokens: 35,
+            input_tokens: 200,
+            model: 'gpt-5.6-sol',
+            output_tokens: 50,
+            reasoning_output_tokens: 13,
+            requests: 2,
+            total_tokens: 250,
+          },
+        ],
         output_tokens: 50,
         period_end: '2026-10-01T00:00:00Z',
         period_start: '2026-09-01T00:00:00Z',
@@ -325,10 +336,15 @@ describe('dashboard management views', () => {
     const apiKeyUsageTable = screen.getByRole('grid', { name: 'API key usage' });
     expect(apiKeyUsageTable).toBeVisible();
     expect(apiKeyUsageTable.closest('.table-root')).toHaveClass('table-root--primary');
-    expect(screen.getByRole('rowheader', { name: 'Development' })).toBeVisible();
-    expect(screen.getByRole('gridcell', { name: 'cg_example...' })).toBeVisible();
-    expect(screen.getByRole('gridcell', { name: '35' })).toBeVisible();
-    expect(screen.getByRole('gridcell', { name: '13' })).toBeVisible();
+    expect(within(apiKeyUsageTable).getByRole('rowheader', { name: 'Development' })).toBeVisible();
+    expect(within(apiKeyUsageTable).getByRole('gridcell', { name: 'cg_example...' })).toBeVisible();
+    expect(within(apiKeyUsageTable).getByRole('gridcell', { name: '35' })).toBeVisible();
+    expect(within(apiKeyUsageTable).getByRole('gridcell', { name: '13' })).toBeVisible();
+    const modelUsageTable = screen.getByRole('grid', { name: 'Model usage' });
+    expect(modelUsageTable).toBeVisible();
+    expect(await screen.findByRole('figure', { name: 'Tokens by model' })).toBeVisible();
+    expect(within(modelUsageTable).getByRole('rowheader', { name: 'gpt-5.6-sol' })).toBeVisible();
+    expect(within(modelUsageTable).getByRole('gridcell', { name: '17.5%' })).toBeVisible();
     expect(
       screen.getByRole('progressbar', { name: 'OpenCode 6-hour token usage' }),
     ).toHaveAttribute('aria-valuenow', '25');
@@ -340,6 +356,7 @@ describe('dashboard management views', () => {
         api_keys: [],
         cached_input_tokens: 0,
         input_tokens: 0,
+        models: [],
         output_tokens: 0,
         period_end: '2026-10-01T00:00:00Z',
         period_start: '2026-09-01T00:00:00Z',

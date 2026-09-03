@@ -291,6 +291,10 @@ func TestUsageSummaryEndpoint(t *testing.T) {
 			Requests: 2, InputTokens: 200, CachedInputTokens: 35, OutputTokens: 50,
 			ReasoningOutputTokens: 13, TotalTokens: 250,
 		}},
+		Models: []projects.ModelUsage{{
+			Model: "gpt-5.6-sol", Requests: 2, InputTokens: 200, CachedInputTokens: 35,
+			OutputTokens: 50, ReasoningOutputTokens: 13, TotalTokens: 250,
+		}},
 	}}
 	handler := newTestHandlerWithProjectService(t, authenticatedAdministrator(), projectService)
 	request := authenticatedRequest(http.MethodGet, "/api/usage", "")
@@ -311,7 +315,8 @@ func TestUsageSummaryEndpoint(t *testing.T) {
 		body.Projects[0].CachedInputTokens != 35 || body.Projects[0].ReasoningOutputTokens != 13 ||
 		len(body.Projects[0].Limits) != 1 || body.Projects[0].Limits[0].TokenLimit != 1_000 ||
 		!body.Projects[0].Limits[0].PeriodStart.Equal(limitStart) ||
-		len(body.APIKeys) != 1 || body.APIKeys[0].APIKeyID != "key_123" || body.APIKeys[0].ProjectID != "prj_123" || body.APIKeys[0].TotalTokens != 250 {
+		len(body.APIKeys) != 1 || body.APIKeys[0].APIKeyID != "key_123" || body.APIKeys[0].ProjectID != "prj_123" || body.APIKeys[0].TotalTokens != 250 ||
+		len(body.Models) != 1 || body.Models[0].Model != "gpt-5.6-sol" || body.Models[0].CachedInputTokens != 35 || body.Models[0].ReasoningOutputTokens != 13 || body.Models[0].TotalTokens != 250 {
 		t.Fatalf("unexpected usage summary: %#v", body)
 	}
 }

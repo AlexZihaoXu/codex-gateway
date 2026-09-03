@@ -66,10 +66,21 @@ export interface APIKeyUsage {
   totalTokens: number;
 }
 
+export interface ModelUsage {
+  cachedInputTokens: number;
+  inputTokens: number;
+  model: string;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  requests: number;
+  totalTokens: number;
+}
+
 export interface UsageSummary {
   apiKeys: APIKeyUsage[];
   cachedInputTokens: number;
   inputTokens: number;
+  models: ModelUsage[];
   outputTokens: number;
   periodEnd: string;
   periodStart: string;
@@ -249,6 +260,7 @@ function parseUsageSummary(value: unknown): UsageSummary | undefined {
     !isDateTime(value.period_end) ||
     !Array.isArray(value.projects) ||
     !Array.isArray(value.api_keys) ||
+    !Array.isArray(value.models) ||
     !isNonnegativeInteger(value.requests) ||
     !isNonnegativeInteger(value.input_tokens) ||
     !isNonnegativeInteger(value.cached_input_tokens) ||
@@ -266,14 +278,48 @@ function parseUsageSummary(value: unknown): UsageSummary | undefined {
   if (apiKeys.some((key) => key === undefined)) {
     return undefined;
   }
+  const models = value.models.map(parseModelUsage);
+  if (models.some((model) => model === undefined)) {
+    return undefined;
+  }
   return {
     apiKeys: apiKeys.filter((key): key is APIKeyUsage => key !== undefined),
     cachedInputTokens: value.cached_input_tokens,
     inputTokens: value.input_tokens,
+    models: models.filter((model): model is ModelUsage => model !== undefined),
     outputTokens: value.output_tokens,
     periodEnd: value.period_end,
     periodStart: value.period_start,
     projects: projects.filter((project): project is ProjectUsage => project !== undefined),
+    reasoningOutputTokens: value.reasoning_output_tokens,
+    requests: value.requests,
+    totalTokens: value.total_tokens,
+  };
+}
+
+function parseModelUsage(value: unknown): ModelUsage | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.model !== 'string' ||
+    value.model.length === 0 ||
+    value.model.length > 128 ||
+    !isNonnegativeInteger(value.requests) ||
+    !isNonnegativeInteger(value.input_tokens) ||
+    !isNonnegativeInteger(value.cached_input_tokens) ||
+    !isNonnegativeInteger(value.output_tokens) ||
+    !isNonnegativeInteger(value.reasoning_output_tokens) ||
+    !isNonnegativeInteger(value.total_tokens) ||
+    value.cached_input_tokens > value.input_tokens ||
+    value.reasoning_output_tokens > value.output_tokens ||
+    value.total_tokens !== value.input_tokens + value.output_tokens
+  ) {
+    return undefined;
+  }
+  return {
+    cachedInputTokens: value.cached_input_tokens,
+    inputTokens: value.input_tokens,
+    model: value.model,
+    outputTokens: value.output_tokens,
     reasoningOutputTokens: value.reasoning_output_tokens,
     requests: value.requests,
     totalTokens: value.total_tokens,

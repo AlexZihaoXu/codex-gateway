@@ -398,6 +398,7 @@ func completedChatCompletion(result codex.GenerationResult, requestedModel strin
 func usageRecord(access projects.ProjectAccess, requestID string, result codex.GenerationResult) projects.UsageRecord {
 	return projects.UsageRecord{
 		RequestID: requestID, ProjectID: access.ProjectID, APIKeyID: access.APIKeyID,
+		Model:       result.Model,
 		InputTokens: result.InputTokens, CachedInputTokens: result.CachedInputTokens,
 		OutputTokens: result.OutputTokens, ReasoningOutputTokens: result.ReasoningOutputTokens,
 		TotalTokens: generationTotalTokens(result),

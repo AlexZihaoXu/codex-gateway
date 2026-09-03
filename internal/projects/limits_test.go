@@ -138,6 +138,58 @@ func TestOpenMigratesLegacyMonthlyLimitExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestOpenBackfillsLegacyUsageWithUnknownModel(t *testing.T) {
+	dsn := fmt.Sprintf("file:legacy-usage-%d?mode=memory&cache=shared", time.Now().UnixNano())
+	legacy, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	for _, statement := range []string{
+		`CREATE TABLE project (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			monthly_token_limit INTEGER, created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE project_api_key (
+			id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+			name TEXT NOT NULL, key_hash BLOB NOT NULL UNIQUE, prefix TEXT NOT NULL,
+			created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER
+		)`,
+		`CREATE TABLE project_usage (
+			request_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+			api_key_id TEXT, input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL, reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
+		)`,
+	} {
+		if _, err := legacy.Exec(statement); err != nil {
+			t.Fatalf("create legacy schema: %v", err)
+		}
+	}
+	if _, err := legacy.Exec("INSERT INTO project VALUES (?, ?, NULL, ?)", "prj_legacy", "Legacy", projectTestNow.Unix()); err != nil {
+		t.Fatalf("insert legacy project: %v", err)
+	}
+	if _, err := legacy.Exec("INSERT INTO project_api_key VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)", "key_legacy", "prj_legacy", "Legacy", []byte("hash"), "cg_legacy", projectTestNow.Unix()); err != nil {
+		t.Fatalf("insert legacy key: %v", err)
+	}
+	if _, err := legacy.Exec("INSERT INTO project_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", "req_legacy", "prj_legacy", "key_legacy", 8, 2, 3, 1, 11, projectTestNow.Unix()); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
+
+	service, err := Open(Options{DataSourceName: dsn, Clock: func() time.Time { return projectTestNow }})
+	if err != nil {
+		t.Fatalf("open migrated service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	summary, err := service.UsageSummary(context.Background())
+	if err != nil {
+		t.Fatalf("read migrated usage: %v", err)
+	}
+	if len(summary.Models) != 1 || summary.Models[0].Model != "unknown" || summary.Models[0].TotalTokens != 11 {
+		t.Fatalf("legacy usage was not grouped under unknown: %#v", summary.Models)
+	}
+}
+
 func TestStoredUsageLimitsAreValidatedAtTheDatabaseBoundary(t *testing.T) {
 	service := newTestService(t)
 	project, err := service.CreateProject(context.Background(), "Boundary", nil)

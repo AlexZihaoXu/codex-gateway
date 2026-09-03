@@ -102,7 +102,9 @@ boundary and verifies both the cache hit and the sum of the two dashboard turns.
 
 ## Attribution
 
-Every completion carries a project ID and a source/API-key ID. Dashboard Chat uses
-a deterministic internal source ID rather than a usable secret. General dashboard
-totals are current-month views; each project limit also calculates its own fixed
-UTC window from the same immutable request records.
+Every completion carries a project ID, source/API-key ID, and terminal model ID.
+Dashboard Chat uses a deterministic internal source ID rather than a usable secret.
+General dashboard totals and per-model breakdowns are current-month views; each
+project limit also calculates its own fixed UTC window from the same immutable
+request records. Legacy rows created before model attribution are retained under an
+explicit `unknown` model bucket.

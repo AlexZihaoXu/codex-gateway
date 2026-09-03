@@ -86,7 +86,7 @@ func New(options Options) (http.Handler, error) {
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/v1/", http.NotFoundHandler())
 	mux.Handle("/", options.Dashboard)
-	return mux, nil
+	return withSecurityHeaders(mux), nil
 }
 
 func registerServiceStatus(api huma.API, path, operationID, summary, status string) {

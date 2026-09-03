@@ -114,6 +114,7 @@ describe('dashboard shell', () => {
         api_keys: [],
         cached_input_tokens: 0,
         input_tokens: 0,
+        models: [],
         output_tokens: 0,
         period_end: '2026-10-01T00:00:00Z',
         period_start: '2026-09-01T00:00:00Z',

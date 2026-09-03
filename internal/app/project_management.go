@@ -141,11 +141,22 @@ type apiKeyUsageBody struct {
 	TotalTokens           int64  `json:"total_tokens" minimum:"0"`
 }
 
+type modelUsageBody struct {
+	Model                 string `json:"model" doc:"Model identifier recorded for completed requests" example:"gpt-5.6-sol"`
+	Requests              int64  `json:"requests" minimum:"0"`
+	InputTokens           int64  `json:"input_tokens" minimum:"0" doc:"Total input tokens, including cached input"`
+	CachedInputTokens     int64  `json:"cached_input_tokens" minimum:"0" doc:"Cached subset of input tokens"`
+	OutputTokens          int64  `json:"output_tokens" minimum:"0" doc:"Total output tokens, including reasoning output"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens" minimum:"0" doc:"Reasoning subset of output tokens"`
+	TotalTokens           int64  `json:"total_tokens" minimum:"0" doc:"Input plus output tokens"`
+}
+
 type usageSummaryBody struct {
 	PeriodStart           time.Time          `json:"period_start" format:"date-time" doc:"Start of the current UTC month"`
 	PeriodEnd             time.Time          `json:"period_end" format:"date-time" doc:"Exclusive end of the current UTC month"`
 	Projects              []projectUsageBody `json:"projects"`
 	APIKeys               []apiKeyUsageBody  `json:"api_keys"`
+	Models                []modelUsageBody   `json:"models" doc:"Current-month usage grouped by model, ordered by total tokens"`
 	Requests              int64              `json:"requests" minimum:"0"`
 	InputTokens           int64              `json:"input_tokens" minimum:"0"`
 	CachedInputTokens     int64              `json:"cached_input_tokens" minimum:"0"`
@@ -279,7 +290,7 @@ func registerProjectManagement(api huma.API, authentication Authentication, serv
 		}
 		body := usageSummaryBody{
 			PeriodStart: usage.PeriodStart, PeriodEnd: usage.PeriodEnd, Projects: make([]projectUsageBody, 0, len(usage.Projects)),
-			APIKeys: make([]apiKeyUsageBody, 0, len(usage.APIKeys)), Requests: usage.Requests,
+			APIKeys: make([]apiKeyUsageBody, 0, len(usage.APIKeys)), Models: make([]modelUsageBody, 0, len(usage.Models)), Requests: usage.Requests,
 			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
 			OutputTokens: usage.OutputTokens, ReasoningOutputTokens: usage.ReasoningOutputTokens,
 			TotalTokens: usage.TotalTokens,
@@ -298,6 +309,13 @@ func registerProjectManagement(api huma.API, authentication Authentication, serv
 				Requests: key.Requests, InputTokens: key.InputTokens, CachedInputTokens: key.CachedInputTokens,
 				OutputTokens: key.OutputTokens, ReasoningOutputTokens: key.ReasoningOutputTokens,
 				TotalTokens: key.TotalTokens,
+			})
+		}
+		for _, model := range usage.Models {
+			body.Models = append(body.Models, modelUsageBody{
+				Model: model.Model, Requests: model.Requests, InputTokens: model.InputTokens,
+				CachedInputTokens: model.CachedInputTokens, OutputTokens: model.OutputTokens,
+				ReasoningOutputTokens: model.ReasoningOutputTokens, TotalTokens: model.TotalTokens,
 			})
 		}
 		return &usageSummaryOutput{Body: body}, nil

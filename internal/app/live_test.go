@@ -187,6 +187,9 @@ func TestLiveDashboardLunaConversationCachingAndTotals(t *testing.T) {
 	if summary.Requests != 2 || summary.TotalTokens != expectedTotal || summary.InputTokens != firstUsage.PromptTokens+secondUsage.PromptTokens || summary.OutputTokens != firstUsage.CompletionTokens+secondUsage.CompletionTokens {
 		t.Fatalf("dashboard usage did not aggregate both Luna turns: %#v", summary)
 	}
+	if len(summary.Models) != 1 || summary.Models[0].Model != "gpt-5.6-luna" || summary.Models[0].Requests != 2 || summary.Models[0].TotalTokens != expectedTotal || summary.Models[0].CachedInputTokens != firstUsage.PromptTokenDetails.CachedTokens+secondUsage.PromptTokenDetails.CachedTokens {
+		t.Fatalf("dashboard usage was not attributed to Luna: %#v", summary.Models)
+	}
 	t.Logf(
 		"Dashboard Luna usage: first input=%d cached=%d total=%d; second input=%d cached=%d total=%d; dashboard total=%d",
 		firstUsage.PromptTokens, firstUsage.PromptTokenDetails.CachedTokens, firstUsage.TotalTokens,

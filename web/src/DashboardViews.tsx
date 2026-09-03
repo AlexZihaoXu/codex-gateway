@@ -12,6 +12,7 @@ import {
   NumberField,
   ProgressBar,
   Select,
+  Skeleton,
   Spinner,
   Surface,
   Table,
@@ -29,12 +30,13 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, type FormEvent, useEffect, useMemo, useState } from 'react';
 
 import { CodexAccountCard } from './CodexAccountCard';
 import {
   type APIKey,
   type IntervalUnit,
+  type ModelUsage,
   type Project,
   type UsageLimit,
   type UsageSummary,
@@ -47,6 +49,8 @@ import {
   revokeAPIKey,
   updateProject,
 } from './project-api';
+
+const ModelUsageChart = lazy(() => import('./ModelUsageChart'));
 
 export function ProjectsView() {
   const [projects, setProjects] = useState<Project[]>();
@@ -603,26 +607,82 @@ export function UsageView() {
   return (
     <section aria-labelledby="usage-heading" className="flex w-full min-w-0 flex-col gap-6 py-8">
       <ViewHeader
-        description="Current UTC-month request and token totals, grouped by project and API key."
+        description="Current UTC-month request and token totals, grouped by model, project, and API key."
         title="Usage"
       />
       {error ? <ErrorAlert message={error} /> : null}
       {!usage && !error ? <LoadingState label="Loading usage" /> : null}
       {usage ? (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="Requests" value={usage.requests} />
-            <MetricCard label="Input tokens" value={usage.inputTokens} />
-            <MetricCard label="Output tokens" value={usage.outputTokens} />
-            <MetricCard label="Total tokens" value={usage.totalTokens} />
-          </div>
-          {usage.projects.length === 0 ? (
+          <Surface className="grid gap-x-8 gap-y-5 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <UsageMetric label="Requests" value={usage.requests} />
+            <UsageMetric label="Total tokens" value={usage.totalTokens} />
+            <UsageMetric label="Input" value={usage.inputTokens} />
+            <UsageMetric label="Cached input" value={usage.cachedInputTokens} />
+            <UsageMetric label="Output" value={usage.outputTokens} />
+            <UsageMetric label="Reasoning" value={usage.reasoningOutputTokens} />
+          </Surface>
+          {usage.requests === 0 ? (
             <EmptyCard
               description="Usage appears after a project sends its first request."
               title="No usage this month"
             />
-          ) : (
-            <div className="flex flex-col gap-4">
+          ) : null}
+          {usage.models.length > 0 ? (
+            <section aria-labelledby="model-usage-heading" className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <Typography id="model-usage-heading" type="h4">
+                  Usage by model
+                </Typography>
+                <Typography color="muted" type="body-sm">
+                  Compare token composition and cache reuse across every model used this month.
+                </Typography>
+              </div>
+              <Suspense fallback={<ModelUsageChartSkeleton />}>
+                <ModelUsageChart models={usage.models} />
+              </Suspense>
+              <Table>
+                <Table.ScrollContainer>
+                  <Table.Content aria-label="Model usage">
+                    <Table.Header>
+                      <Table.Column isRowHeader>Model</Table.Column>
+                      <Table.Column>Requests</Table.Column>
+                      <Table.Column>Input</Table.Column>
+                      <Table.Column>Cached input</Table.Column>
+                      <Table.Column>Output</Table.Column>
+                      <Table.Column>Reasoning</Table.Column>
+                      <Table.Column>Cache rate</Table.Column>
+                      <Table.Column>Total</Table.Column>
+                    </Table.Header>
+                    <Table.Body>
+                      {usage.models.map((model) => (
+                        <Table.Row id={model.model} key={model.model}>
+                          <Table.Cell>{model.model}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.requests)}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.inputTokens)}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.cachedInputTokens)}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.outputTokens)}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.reasoningOutputTokens)}</Table.Cell>
+                          <Table.Cell>{formatPercent(cacheRate(model))}</Table.Cell>
+                          <Table.Cell>{formatNumber(model.totalTokens)}</Table.Cell>
+                        </Table.Row>
+                      ))}
+                    </Table.Body>
+                  </Table.Content>
+                </Table.ScrollContainer>
+              </Table>
+            </section>
+          ) : null}
+          {usage.projects.length > 0 ? (
+            <section aria-labelledby="project-usage-heading" className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <Typography id="project-usage-heading" type="h4">
+                  Project limits
+                </Typography>
+                <Typography color="muted" type="body-sm">
+                  Active safeguards and current-month totals for each project.
+                </Typography>
+              </div>
               {usage.projects.map((project) => (
                 <Card key={project.projectID}>
                   <Card.Header>
@@ -679,8 +739,8 @@ export function UsageView() {
                   </Card.Footer>
                 </Card>
               ))}
-            </div>
-          )}
+            </section>
+          ) : null}
           {usage.apiKeys.length > 0 ? (
             <section aria-labelledby="api-key-usage-heading" className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
@@ -797,14 +857,38 @@ function ViewHeader({ action, description, title }: ViewHeaderProps) {
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: number }) {
+function UsageMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <Typography color="muted" type="body-xs">
+        {label}
+      </Typography>
+      <Typography type="h4">{formatNumber(value)}</Typography>
+    </div>
+  );
+}
+
+function ModelUsageChartSkeleton() {
   return (
     <Card>
       <Card.Header>
-        <Card.Description>{label}</Card.Description>
-        <Card.Title>{formatNumber(value)}</Card.Title>
+        <Card.Title>Tokens by model</Card.Title>
+        <Card.Description>Loading model token composition.</Card.Description>
       </Card.Header>
+      <Card.Content>
+        <Skeleton className="h-64 w-full" />
+      </Card.Content>
     </Card>
+  );
+}
+
+function cacheRate(model: ModelUsage): number {
+  return model.inputTokens === 0 ? 0 : model.cachedInputTokens / model.inputTokens;
+}
+
+function formatPercent(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, style: 'percent' }).format(
+    value,
   );
 }
 

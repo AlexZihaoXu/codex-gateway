@@ -1,5 +1,6 @@
-function composeOutput(args: string[]): string[] {
+function composeOutput(args: string[], env?: Record<string, string>): string[] {
   const result = Bun.spawnSync(['docker', 'compose', ...args], {
+    env: env ? { ...process.env, ...env } : undefined,
     stderr: 'pipe',
     stdout: 'pipe',
   });
@@ -56,6 +57,22 @@ if (
 const productionConfig: unknown = JSON.parse(
   composeOutput(['--profile', 'prod', 'config', '--format', 'json']).join('\n'),
 );
+const tailscaleProductionConfig: unknown = JSON.parse(
+  composeOutput(['--profile', 'prod', 'config', '--format', 'json'], {
+    CODEX_GATEWAY_BIND_ADDRESS: '100.64.0.1',
+  }).join('\n'),
+);
+if (
+  !isRecord(tailscaleProductionConfig) ||
+  !isRecord(tailscaleProductionConfig.services) ||
+  !isRecord(tailscaleProductionConfig.services.gateway) ||
+  !Array.isArray(tailscaleProductionConfig.services.gateway.ports) ||
+  !tailscaleProductionConfig.services.gateway.ports.some(
+    (port) => isRecord(port) && port.host_ip === '100.64.0.1' && port.published === '11435',
+  )
+) {
+  throw new Error('Production service must support an explicit bind address');
+}
 for (const [name, config] of [
   ['development', developmentConfig],
   ['production', productionConfig],

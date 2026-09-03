@@ -151,6 +151,57 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestResponsesIncludeBrowserSecurityHeaders(t *testing.T) {
+	handler := newTestHandler(t)
+
+	for _, requestPath := range []string{"/", "/doc", "/openapi.json"} {
+		t.Run(requestPath, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+			}
+			expected := map[string]string{
+				"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+				"Referrer-Policy":            "no-referrer",
+				"X-Content-Type-Options":     "nosniff",
+				"X-Frame-Options":            "DENY",
+			}
+			for name, value := range expected {
+				if actual := response.Header().Get(name); actual != value {
+					t.Errorf("expected %s %q, got %q", name, value, actual)
+				}
+			}
+			contentSecurityPolicy := response.Header().Get("Content-Security-Policy")
+			for _, directive := range []string{
+				"default-src 'self'",
+				"frame-ancestors 'none'",
+				"object-src 'none'",
+				"script-src 'self' https://apis.google.com",
+			} {
+				if !strings.Contains(contentSecurityPolicy, directive) {
+					t.Errorf("Content-Security-Policy does not contain %q: %q", directive, contentSecurityPolicy)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthenticatedAPIsDisableCaching(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if actual := response.Header().Get("Cache-Control"); actual != "no-store" {
+		t.Fatalf("expected authenticated API response to disable caching, got %q", actual)
+	}
+}
+
 func TestOpenAPIDocument(t *testing.T) {
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
@@ -216,6 +267,7 @@ func TestOpenAPIDocument(t *testing.T) {
 	for _, schemaField := range []string{
 		`"limits"`, `"token_limit"`, `"interval_count"`, `"interval_unit"`,
 		`"minute"`, `"hour"`, `"day"`, `"week"`, `"month"`, `"period_end"`,
+		`"models"`, `"cached_input_tokens"`, `"reasoning_output_tokens"`,
 	} {
 		if !strings.Contains(response.Body.String(), schemaField) {
 			t.Fatalf("OpenAPI document does not contain usage-limit schema field %s", schemaField)

@@ -15,7 +15,7 @@ services:
       - >-
         bun install --frozen-lockfile --ignore-scripts --concurrent-scripts 2 && exec bun run dev
     ports:
-      - '127.0.0.1:${CODEX_GATEWAY_PORT:-11435}:5173'
+      - '${CODEX_GATEWAY_BIND_ADDRESS:-127.0.0.1}:${CODEX_GATEWAY_PORT:-11435}:5173'
     environment:
       DATA_DIR: /data/gateway
       FIREBASE_ADMIN_EMAIL: ${FIREBASE_ADMIN_EMAIL:-}
@@ -47,7 +47,7 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - '127.0.0.1:${CODEX_GATEWAY_PORT:-11435}:8080'
+      - '${CODEX_GATEWAY_BIND_ADDRESS:-127.0.0.1}:${CODEX_GATEWAY_PORT:-11435}:8080'
     environment:
       DATA_DIR: /data/gateway
       FIREBASE_ADMIN_EMAIL: ${FIREBASE_ADMIN_EMAIL:-}
