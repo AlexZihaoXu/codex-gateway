@@ -19,6 +19,7 @@ tested as if it does.
 6. [Testing playbook](06-testing-playbook.md)
 7. [OpenCode direct transport audit and migration decision](07-opencode-direct-transport-audit.md)
 8. [Standalone Codex search](08-standalone-codex-search.md)
+9. [Dashboard web-search tool loop](09-dashboard-web-search-tool-loop.md)
 
 ## Sources of truth
 
@@ -44,8 +45,11 @@ the transport audit, then update tests before changing production parsing.
 - Standalone search also requires a project Bearer key. Its successful calls count
   as project requests, but not as tokens because the upstream search response has
   no token-usage object.
-- Inference requests are stateless (`store: false`), contain no tools, and carry only
-  explicitly supplied text plus in-memory continuation state.
+- Public `/v1/*` inference requests are stateless (`store: false`), contain no
+  tools, and carry only explicitly supplied text plus in-memory continuation
+  state. Dashboard Chat can explicitly opt into the single namespaced `web.run`
+  tool; the gateway executes it through standalone Codex search and returns the
+  result to the same model turn.
 - Public compatibility prompt and response content is not persisted. Dashboard
   Chat explicitly stores only completed visible transcripts, settings, and
   terminal usage in owner-scoped SQLite rows; partial output and opaque encrypted

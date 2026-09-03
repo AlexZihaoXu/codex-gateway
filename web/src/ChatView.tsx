@@ -8,12 +8,14 @@ import {
   Form,
   Input,
   Label,
+  Link,
   ListBox,
   Modal,
   ScrollShadow,
   Select,
   Spinner,
   Surface,
+  Switch,
   TextArea,
   TextField,
   Tooltip,
@@ -24,6 +26,8 @@ import {
   ArrowDown,
   Brain,
   EllipsisVertical,
+  ExternalLink,
+  Globe2,
   MessageSquare,
   Pencil,
   Plus,
@@ -52,6 +56,8 @@ import {
   type PlaygroundMessage,
   type PlaygroundUsage,
   type ReasoningEffort,
+  type WebSearchActivity,
+  type WebSearchResult,
   renameChatSession,
   streamPlayground,
 } from './chat-api';
@@ -65,6 +71,7 @@ interface DisplayMessage extends PlaygroundMessage {
   reasoning?: string | undefined;
   streaming?: boolean | undefined;
   usage?: PlaygroundUsage | undefined;
+  webSearches?: WebSearchActivity[] | undefined;
 }
 
 interface ChatSession {
@@ -76,6 +83,7 @@ interface ChatSession {
   projectID: string;
   reasoningEffort: ReasoningEffort;
   title: string;
+  webSearch: boolean;
 }
 
 interface TurnOptions {
@@ -119,6 +127,7 @@ export function ChatView() {
   const [projectID, setProjectID] = useState('');
   const [endpoint, setEndpoint] = useState<PlaygroundEndpoint>('chat-completions');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
+  const [webSearch, setWebSearch] = useState(false);
   const [instructions, setInstructions] = useState('');
   const [draft, setDraft] = useState('');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -175,6 +184,7 @@ export function ChatView() {
         setActiveSessionID(restoredSession?.id);
         setEndpoint(restoredSession?.endpoint ?? 'chat-completions');
         setReasoningEffort(restoredSession?.reasoningEffort ?? 'medium');
+        setWebSearch(restoredSession?.webSearch ?? false);
         setInstructions(restoredSession?.instructions ?? '');
         if (availableModels.length === 0) {
           setSetupFailed(true);
@@ -260,6 +270,31 @@ export function ChatView() {
     );
   }
 
+  function updateWebSearch(sessionID: string, messageID: string, activity: WebSearchActivity) {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionID
+          ? {
+              ...session,
+              messages: session.messages.map((message) => {
+                if (message.id !== messageID) return message;
+                const searches = message.webSearches ?? [];
+                const exists = searches.some((search) => search.callID === activity.callID);
+                return {
+                  ...message,
+                  webSearches: exists
+                    ? searches.map((search) =>
+                        search.callID === activity.callID ? activity : search,
+                      )
+                    : [...searches, activity],
+                };
+              }),
+            }
+          : session,
+      ),
+    );
+  }
+
   async function runTurn(content: string, options: TurnOptions = {}): Promise<boolean> {
     const sourceSession = options.session ?? activeSession;
     if (!content || !model || !projectID || streaming) return false;
@@ -283,6 +318,7 @@ export function ChatView() {
       reasoning: '',
       role: 'assistant',
       streaming: true,
+      webSearches: [],
     };
     const requestProjectID = sourceSession?.projectID ?? projectID;
     const previousMessages = options.previousMessages ?? sourceSession?.messages ?? [];
@@ -303,6 +339,7 @@ export function ChatView() {
       projectID: requestProjectID,
       reasoningEffort,
       title: sourceSession?.title ?? chatTitle(content),
+      webSearch,
     };
     setSessions((current) => {
       const exists = current.some((item) => item.id === sessionID);
@@ -341,6 +378,7 @@ export function ChatView() {
           sessionID,
           signal: controller.signal,
           title: session.title,
+          webSearch,
         },
         (delta) => {
           pendingText += delta;
@@ -350,6 +388,10 @@ export function ChatView() {
           pendingReasoning += delta;
           scheduleRender();
         },
+        (activity) => {
+          if (!followLatestRef.current) setUnseenActivity(true);
+          updateWebSearch(sessionID, assistantMessage.id, activity);
+        },
       );
       if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
       renderFrame = undefined;
@@ -358,6 +400,7 @@ export function ChatView() {
         reasoning: result.reasoning,
         streaming: false,
         usage: result.usage,
+        webSearches: result.webSearches,
       });
       if (!followLatestRef.current) setUnseenActivity(true);
       return true;
@@ -458,6 +501,7 @@ export function ChatView() {
     setDraft('');
     setError(undefined);
     setInstructions('');
+    setWebSearch(false);
     setPreviewHtml(undefined);
     cancelEditing();
     smoothScrolling.current = false;
@@ -472,6 +516,7 @@ export function ChatView() {
     setEndpoint(session.endpoint);
     setInstructions(session.instructions);
     setReasoningEffort(session.reasoningEffort);
+    setWebSearch(session.webSearch);
     if (models?.includes(session.model)) setModel(session.model);
     if (
       session.projectID === dashboardChatProject ||
@@ -522,6 +567,7 @@ export function ChatView() {
       if (activeSessionID === candidate.id) {
         setActiveSessionID(undefined);
         setInstructions('');
+        setWebSearch(false);
         setDraft('');
         setPreviewHtml(undefined);
       }
@@ -764,6 +810,22 @@ export function ChatView() {
                           ? 'Usage is counted in the Dashboard Chat bucket.'
                           : 'Usage and limits apply to the selected project.'}
                       </Typography>
+                      <Switch
+                        aria-label="Web search"
+                        className="ml-auto"
+                        isDisabled={streaming}
+                        isSelected={webSearch}
+                        size="sm"
+                        onChange={setWebSearch}
+                      >
+                        <Switch.Content>
+                          <Switch.Control>
+                            <Switch.Thumb />
+                          </Switch.Control>
+                          <Globe2 aria-hidden="true" size={14} />
+                          Web search
+                        </Switch.Content>
+                      </Switch>
                     </div>
                     <Disclosure>
                       <Disclosure.Heading>
@@ -1102,6 +1164,7 @@ function ConversationMessage({
         reasoning={message.reasoning}
         streaming={Boolean(message.streaming)}
       />
+      <WebSearchActivityList searches={message.webSearches ?? []} />
       <AssistantContent message={message} onOpenHtmlPreview={onOpenHtmlPreview} />
       {message.usage ? (
         <Typography color="muted" type="body-xs">
@@ -1110,6 +1173,87 @@ function ConversationMessage({
       ) : null}
     </article>
   );
+}
+
+function WebSearchActivityList({ searches }: { searches: WebSearchActivity[] }) {
+  if (searches.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2" aria-label="Web search activity">
+      {searches.map((search) => {
+        if (search.status === 'running') {
+          return (
+            <div key={search.callID} className="flex items-center gap-2" role="status">
+              <Spinner size="sm" />
+              <Typography type="body-sm">Searching the web: {search.query}</Typography>
+            </div>
+          );
+        }
+        const sources = search.results.filter(hasSafeExternalURL);
+        return (
+          <Disclosure key={search.callID}>
+            <Disclosure.Heading>
+              <Button
+                aria-label={`Searched the web: ${search.query}`}
+                slot="trigger"
+                size="sm"
+                variant="ghost"
+              >
+                <Globe2 aria-hidden="true" size={15} />
+                Searched the web
+                <Chip size="sm" variant="soft">
+                  <Chip.Label>{sources.length} sources</Chip.Label>
+                </Chip>
+                <Disclosure.Indicator />
+              </Button>
+            </Disclosure.Heading>
+            <Disclosure.Content>
+              <Disclosure.Body className="flex flex-col gap-3 pl-2 pt-2">
+                <Typography color="muted" type="body-xs">
+                  {search.query}
+                </Typography>
+                {sources.length > 0 ? (
+                  <ul className="flex flex-col gap-3">
+                    {sources.map((source, index) => (
+                      <li className="flex min-w-0 flex-col gap-1" key={`${source.url}-${index}`}>
+                        <Link href={source.url} rel="noreferrer" target="_blank">
+                          {source.title || source.url}
+                          <Link.Icon>
+                            <ExternalLink aria-hidden="true" size={13} />
+                          </Link.Icon>
+                        </Link>
+                        {source.snippet ? (
+                          <Typography color="muted" type="body-xs">
+                            {source.snippet}
+                          </Typography>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <Typography color="muted" type="body-xs">
+                    Search completed without linkable sources.
+                  </Typography>
+                )}
+              </Disclosure.Body>
+            </Disclosure.Content>
+          </Disclosure>
+        );
+      })}
+    </div>
+  );
+}
+
+function safeExternalURL(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+function hasSafeExternalURL(result: WebSearchResult): result is WebSearchResult & { url: string } {
+  return typeof result.url === 'string' && safeExternalURL(result.url);
 }
 
 function ReasoningBlock({
@@ -1199,6 +1343,7 @@ function displaySession(session: PersistedChatSession): ChatSession {
     projectID: session.projectID || dashboardChatProject,
     reasoningEffort: session.reasoningEffort,
     title: session.title,
+    webSearch: session.webSearch,
   };
 }
 

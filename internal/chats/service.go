@@ -3,6 +3,7 @@ package chats
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -23,6 +24,7 @@ const (
 	maximumInstructionsLength = 4 * 1024 * 1024
 	maximumMessageLength      = 1024 * 1024
 	maximumMessages           = 1025
+	maximumWebSearches        = 64
 )
 
 var (
@@ -67,10 +69,17 @@ type Usage struct {
 }
 
 type Message struct {
-	Role      Role
-	Content   string
-	Reasoning string
-	Usage     *Usage
+	Role        Role
+	Content     string
+	Reasoning   string
+	WebSearches []WebSearch
+	Usage       *Usage
+}
+
+type WebSearch struct {
+	CallID  string           `json:"call_id"`
+	Query   string           `json:"query"`
+	Results []map[string]any `json:"results,omitempty"`
 }
 
 type Session struct {
@@ -81,6 +90,7 @@ type Session struct {
 	Endpoint        Endpoint
 	ReasoningEffort ReasoningEffort
 	Instructions    string
+	WebSearch       bool
 	Messages        []Message
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -138,8 +148,8 @@ func (service *Service) SaveSession(ctx context.Context, owner string, session S
 	if _, err := transaction.ExecContext(ctx, `
 		INSERT INTO dashboard_chat_session (
 			owner_email, id, title, model, project_id, endpoint, reasoning_effort,
-			instructions, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			instructions, web_search, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner_email, id) DO UPDATE SET
 			title = excluded.title,
 			model = excluded.model,
@@ -147,9 +157,10 @@ func (service *Service) SaveSession(ctx context.Context, owner string, session S
 			endpoint = excluded.endpoint,
 			reasoning_effort = excluded.reasoning_effort,
 			instructions = excluded.instructions,
+			web_search = excluded.web_search,
 			updated_at = excluded.updated_at
 	`, owner, session.ID, session.Title, session.Model, session.ProjectID, session.Endpoint,
-		session.ReasoningEffort, session.Instructions, now.Unix(), now.Unix()); err != nil {
+		session.ReasoningEffort, session.Instructions, boolInteger(session.WebSearch), now.Unix(), now.Unix()); err != nil {
 		return fmt.Errorf("store chat session: %w", err)
 	}
 	if err := preserveStoredUsage(ctx, transaction, owner, &session); err != nil {
@@ -168,13 +179,17 @@ func (service *Service) SaveSession(ctx context.Context, owner string, session S
 			hasUsage = 1
 			usage = *message.Usage
 		}
+		webSearches, err := json.Marshal(message.WebSearches)
+		if err != nil {
+			return fmt.Errorf("encode chat message web searches: %w", err)
+		}
 		if _, err := transaction.ExecContext(ctx, `
 			INSERT INTO dashboard_chat_message (
-				owner_email, session_id, position, role, content, reasoning, has_usage,
+				owner_email, session_id, position, role, content, reasoning, web_searches, has_usage,
 				input_tokens, cached_input_tokens, output_tokens,
 				reasoning_output_tokens, total_tokens
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, owner, session.ID, position, message.Role, message.Content, message.Reasoning, hasUsage,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, owner, session.ID, position, message.Role, message.Content, message.Reasoning, string(webSearches), hasUsage,
 			usage.InputTokens, usage.CachedInputTokens, usage.OutputTokens,
 			usage.ReasoningOutputTokens, usage.TotalTokens); err != nil {
 			return fmt.Errorf("store chat session message: %w", err)
@@ -188,7 +203,7 @@ func (service *Service) SaveSession(ctx context.Context, owner string, session S
 
 func preserveStoredUsage(ctx context.Context, transaction *sql.Tx, owner string, session *Session) error {
 	rows, err := transaction.QueryContext(ctx, `
-		SELECT position, role, content, reasoning, input_tokens, cached_input_tokens,
+		SELECT position, role, content, reasoning, web_searches, input_tokens, cached_input_tokens,
 		       output_tokens, reasoning_output_tokens, total_tokens
 		FROM dashboard_chat_message
 		WHERE owner_email = ? AND session_id = ? AND has_usage = 1
@@ -203,7 +218,8 @@ func preserveStoredUsage(ctx context.Context, transaction *sql.Tx, owner string,
 		var content string
 		var usage Usage
 		var reasoning string
-		if err := rows.Scan(&position, &role, &content, &reasoning, &usage.InputTokens,
+		var webSearchesJSON string
+		if err := rows.Scan(&position, &role, &content, &reasoning, &webSearchesJSON, &usage.InputTokens,
 			&usage.CachedInputTokens, &usage.OutputTokens, &usage.ReasoningOutputTokens,
 			&usage.TotalTokens); err != nil {
 			return fmt.Errorf("scan existing chat usage: %w", err)
@@ -212,8 +228,13 @@ func preserveStoredUsage(ctx context.Context, transaction *sql.Tx, owner string,
 			continue
 		}
 		message := &session.Messages[position]
-		if message.Usage == nil && message.Role == Role(role) && message.Content == content && message.Reasoning == reasoning {
-			message.Usage = &usage
+		if message.Role == Role(role) && message.Content == content && message.Reasoning == reasoning {
+			if message.Usage == nil {
+				message.Usage = &usage
+			}
+			if len(message.WebSearches) == 0 && json.Unmarshal([]byte(webSearchesJSON), &message.WebSearches) != nil {
+				return errors.New("stored chat message web searches are invalid")
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -229,7 +250,7 @@ func (service *Service) ListSessions(ctx context.Context, owner string) ([]Sessi
 	}
 	rows, err := service.database.QueryContext(ctx, `
 		SELECT id, title, model, project_id, endpoint, reasoning_effort,
-		       instructions, created_at, updated_at
+		       instructions, web_search, created_at, updated_at
 		FROM dashboard_chat_session
 		WHERE owner_email = ?
 		ORDER BY updated_at DESC, id ASC
@@ -244,13 +265,19 @@ func (service *Service) ListSessions(ctx context.Context, owner string) ([]Sessi
 		var effort string
 		var createdAt int64
 		var updatedAt int64
+		var webSearch int
 		if err := rows.Scan(&session.ID, &session.Title, &session.Model, &session.ProjectID,
-			&endpoint, &effort, &session.Instructions, &createdAt, &updatedAt); err != nil {
+			&endpoint, &effort, &session.Instructions, &webSearch, &createdAt, &updatedAt); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan chat session: %w", err)
 		}
 		session.Endpoint = Endpoint(endpoint)
 		session.ReasoningEffort = ReasoningEffort(effort)
+		if webSearch != 0 && webSearch != 1 {
+			_ = rows.Close()
+			return nil, errors.New("stored chat web search setting is invalid")
+		}
+		session.WebSearch = webSearch == 1
 		session.CreatedAt = time.Unix(createdAt, 0).UTC()
 		session.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		sessions = append(sessions, session)
@@ -329,7 +356,7 @@ func (service *Service) RenameSession(ctx context.Context, owner, id, title stri
 
 func (service *Service) listMessages(ctx context.Context, owner, sessionID string) ([]Message, error) {
 	rows, err := service.database.QueryContext(ctx, `
-		SELECT role, content, reasoning, has_usage, input_tokens, cached_input_tokens,
+		SELECT role, content, reasoning, web_searches, has_usage, input_tokens, cached_input_tokens,
 		       output_tokens, reasoning_output_tokens, total_tokens
 		FROM dashboard_chat_message
 		WHERE owner_email = ? AND session_id = ?
@@ -345,12 +372,16 @@ func (service *Service) listMessages(ctx context.Context, owner, sessionID strin
 		var role string
 		var hasUsage int
 		var usage Usage
-		if err := rows.Scan(&role, &message.Content, &message.Reasoning, &hasUsage, &usage.InputTokens,
+		var webSearchesJSON string
+		if err := rows.Scan(&role, &message.Content, &message.Reasoning, &webSearchesJSON, &hasUsage, &usage.InputTokens,
 			&usage.CachedInputTokens, &usage.OutputTokens, &usage.ReasoningOutputTokens,
 			&usage.TotalTokens); err != nil {
 			return nil, fmt.Errorf("scan chat session message: %w", err)
 		}
 		message.Role = Role(role)
+		if err := json.Unmarshal([]byte(webSearchesJSON), &message.WebSearches); err != nil {
+			return nil, errors.New("stored chat message web searches are invalid")
+		}
 		if hasUsage == 1 {
 			message.Usage = &usage
 		} else if hasUsage != 0 {
@@ -377,6 +408,7 @@ func (service *Service) initialize(ctx context.Context) error {
 			endpoint TEXT NOT NULL CHECK (endpoint IN ('chat-completions', 'responses')),
 			reasoning_effort TEXT NOT NULL CHECK (reasoning_effort IN ('none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')),
 			instructions TEXT NOT NULL,
+			web_search INTEGER NOT NULL DEFAULT 0 CHECK (web_search IN (0, 1)),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (owner_email, id)
@@ -388,6 +420,7 @@ func (service *Service) initialize(ctx context.Context) error {
 			role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
 			content TEXT NOT NULL,
 			reasoning TEXT NOT NULL DEFAULT '',
+			web_searches TEXT NOT NULL DEFAULT '[]',
 			has_usage INTEGER NOT NULL CHECK (has_usage IN (0, 1)),
 			input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
 			cached_input_tokens INTEGER NOT NULL CHECK (cached_input_tokens >= 0),
@@ -407,6 +440,47 @@ func (service *Service) initialize(ctx context.Context) error {
 	}
 	if err := service.ensureMessageReasoningColumn(ctx); err != nil {
 		return err
+	}
+	if err := service.ensureColumn(ctx, "dashboard_chat_session", "web_search", "ALTER TABLE dashboard_chat_session ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0 CHECK (web_search IN (0, 1))"); err != nil {
+		return err
+	}
+	if err := service.ensureColumn(ctx, "dashboard_chat_message", "web_searches", "ALTER TABLE dashboard_chat_message ADD COLUMN web_searches TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (service *Service) ensureColumn(ctx context.Context, table, column, statement string) error {
+	rows, err := service.database.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var columnID int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close %s schema: %w", table, err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := service.database.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }
@@ -473,8 +547,15 @@ func validSession(session Session) bool {
 		return false
 	}
 	for _, message := range session.Messages {
+		if len(message.WebSearches) > maximumWebSearches {
+			return false
+		}
+		encodedWebSearches, err := json.Marshal(message.WebSearches)
+		if err != nil || len(encodedWebSearches) > maximumMessageLength {
+			return false
+		}
 		if len(message.Content) > maximumMessageLength || len(message.Reasoning) > maximumMessageLength || (message.Role != RoleAssistant && strings.TrimSpace(message.Content) == "") ||
-			(message.Role != RoleAssistant && message.Reasoning != "") ||
+			(message.Role != RoleAssistant && (message.Reasoning != "" || len(message.WebSearches) > 0)) ||
 			(message.Role != RoleUser && message.Role != RoleAssistant) || (message.Role == RoleUser && message.Usage != nil) {
 			return false
 		}
@@ -483,6 +564,13 @@ func validSession(session Session) bool {
 		}
 	}
 	return true
+}
+
+func boolInteger(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func validSessionID(id string) bool {

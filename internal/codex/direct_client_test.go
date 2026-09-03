@@ -307,6 +307,127 @@ func TestDirectClientStreamsResponsesAndCarriesConversationState(t *testing.T) {
 	}
 }
 
+func TestDirectClientExecutesNamespacedWebSearchToolAndContinuesGeneration(t *testing.T) {
+	t.Parallel()
+	var responseBodies []map[string]any
+	var searchBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/backend-api/codex/responses":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode response request: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			responseBodies = append(responseBodies, body)
+			writer.Header().Set("Content-Type", "text/event-stream")
+			if len(responseBodies) == 1 {
+				_, _ = io.WriteString(writer, `data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"web-call-1","namespace":"web","name":"run","arguments":"{\"search_query\":[{\"q\":\"current Codex Gateway release\"}]}"}}
+
+data: {"type":"response.completed","response":{"id":"response-tool","model":"gpt-5.6-luna","output":[],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":4},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":12}}}
+
+`)
+				return
+			}
+			_, _ = io.WriteString(writer, `data: {"type":"response.output_text.delta","delta":"The current release is verified."}
+
+data: {"type":"response.completed","response":{"id":"response-answer","model":"gpt-5.6-luna","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The current release is verified."}]}],"usage":{"input_tokens":15,"input_tokens_details":{"cached_tokens":8},"output_tokens":4,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":19}}}
+
+`)
+		case "/backend-api/codex/alpha/search":
+			if err := json.NewDecoder(request.Body).Decode(&searchBody); err != nil {
+				t.Errorf("decode search request: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeJSON(t, writer, map[string]any{
+				"output": "Search result", "results": []map[string]any{{
+					"type": "text_result", "url": "https://example.test/release", "title": "Release",
+				}},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	client := newAuthenticatedTestClient(t, server, storedCredentials{
+		AccessToken: "access", RefreshToken: "refresh", AccountID: "account",
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	events, err := client.Generate(context.Background(), GenerateRequest{
+		ConversationID: "dashboard-chat", Model: "gpt-5.6-luna", Input: "Search for the current release.",
+		ContinuationInput: "Search for the current release.", EnableWebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("start generation: %v", err)
+	}
+	var result GenerationResult
+	var started, completed *WebSearchEvent
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("generation event: %v", event.Err)
+		}
+		switch event.Type {
+		case GenerationWebSearchStarted:
+			started = event.WebSearch
+		case GenerationWebSearchCompleted:
+			completed = event.WebSearch
+		case GenerationCompleted:
+			if event.Result != nil {
+				result = *event.Result
+			}
+		}
+	}
+
+	if result.Text != "The current release is verified." || result.InputTokens != 25 || result.CachedInputTokens != 12 || result.OutputTokens != 6 || result.ReasoningOutputTokens != 2 || result.TotalTokens != 31 || len(result.WebSearches) != 1 || result.WebSearches[0].Query != "current Codex Gateway release" {
+		t.Fatalf("unexpected aggregate result: %#v", result)
+	}
+	if started == nil || started.CallID != "web-call-1" || started.Query != "current Codex Gateway release" {
+		t.Fatalf("unexpected started event: %#v", started)
+	}
+	if completed == nil || completed.CallID != "web-call-1" || completed.Output != "Search result" || len(completed.Results) != 1 {
+		t.Fatalf("unexpected completed event: %#v", completed)
+	}
+	if len(responseBodies) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(responseBodies))
+	}
+	tools, _ := responseBodies[0]["tools"].([]any)
+	if len(tools) != 1 || nestedString(tools[0], "type") != "namespace" || nestedString(tools[0], "name") != "web" {
+		t.Fatalf("web namespace tool was not exposed: %#v", tools)
+	}
+	if nestedString(tools[0], "description") != "Tools in the web namespace." {
+		t.Fatalf("web namespace description drifted from the reserved tool contract: %#v", tools[0])
+	}
+	tool := tools[0].(map[string]any)["tools"].([]any)[0]
+	parameters := tool.(map[string]any)["parameters"].(map[string]any)
+	searchQuery := parameters["properties"].(map[string]any)["search_query"].(map[string]any)
+	queryProperties := searchQuery["items"].(map[string]any)["properties"].(map[string]any)
+	if searchQuery["description"] != "Query the internet search engine for a given list of queries." ||
+		queryProperties["domains"].(map[string]any)["description"] != "Whether to filter by a specific list of domains." ||
+		queryProperties["recency"].(map[string]any)["format"] != nil ||
+		queryProperties["recency"].(map[string]any)["minimum"] != nil ||
+		parameters["additionalProperties"] != nil || searchQuery["items"].(map[string]any)["additionalProperties"] != nil {
+		t.Fatalf("web.run parameters drifted from the reserved tool schema: %#v", parameters)
+	}
+	if responseBodies[0]["tool_choice"] != "auto" {
+		t.Fatalf("web search request omitted automatic tool selection: %#v", responseBodies[0]["tool_choice"])
+	}
+	secondInput, _ := responseBodies[1]["input"].([]any)
+	if len(secondInput) != 3 || nestedString(secondInput[1], "type") != "function_call" || nestedString(secondInput[2], "type") != "function_call_output" || nestedString(secondInput[2], "call_id") != "web-call-1" {
+		t.Fatalf("tool output was not continued into the model: %#v", secondInput)
+	}
+	if searchBody["id"] != "dashboard-chat" || searchBody["model"] != "gpt-5.6-luna" {
+		t.Fatalf("unexpected search request identity: %#v", searchBody)
+	}
+	commands, _ := searchBody["commands"].(map[string]any)
+	queries, _ := commands["search_query"].([]any)
+	if len(queries) != 1 || nestedString(queries[0], "q") != "current Codex Gateway release" {
+		t.Fatalf("unexpected search commands: %#v", commands)
+	}
+}
+
 func TestDirectClientEmitsReasoningSummaryDeltasSeparatelyFromAnswerText(t *testing.T) {
 	t.Parallel()
 	stream := strings.NewReader(

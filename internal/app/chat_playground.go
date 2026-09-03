@@ -33,6 +33,7 @@ type dashboardChatRequestBody struct {
 	Messages        []chatMessage `json:"messages" minItems:"1" maxItems:"1024"`
 	ReasoningEffort string        `json:"reasoning_effort,omitempty" enum:"none,low,medium,high,xhigh,max,ultra" doc:"Reasoning effort passed to Codex"`
 	RestartSession  bool          `json:"restart_session,omitempty" doc:"Reset the in-memory Codex continuation before replaying edited chat history"`
+	WebSearch       bool          `json:"web_search,omitempty" doc:"Expose the namespaced web.run tool and allow Codex to use standalone web search during this turn"`
 }
 
 type dashboardChatInput struct {
@@ -64,10 +65,11 @@ type dashboardChatUsageBody struct {
 }
 
 type dashboardChatMessageBody struct {
-	Role      string                  `json:"role" enum:"user,assistant"`
-	Content   string                  `json:"content"`
-	Reasoning string                  `json:"reasoning,omitempty" doc:"Visible reasoning summary returned by Codex"`
-	Usage     *dashboardChatUsageBody `json:"usage,omitempty"`
+	Role        string                        `json:"role" enum:"user,assistant"`
+	Content     string                        `json:"content"`
+	Reasoning   string                        `json:"reasoning,omitempty" doc:"Visible reasoning summary returned by Codex"`
+	WebSearches []dashboardWebSearchEventBody `json:"web_searches,omitempty"`
+	Usage       *dashboardChatUsageBody       `json:"usage,omitempty"`
 }
 
 type dashboardChatSessionBody struct {
@@ -78,6 +80,7 @@ type dashboardChatSessionBody struct {
 	Endpoint        string                     `json:"endpoint" enum:"chat-completions,responses"`
 	ReasoningEffort string                     `json:"reasoning_effort" enum:"none,low,medium,high,xhigh,max,ultra"`
 	Instructions    string                     `json:"instructions"`
+	WebSearch       bool                       `json:"web_search"`
 	Messages        []dashboardChatMessageBody `json:"messages"`
 	CreatedAt       time.Time                  `json:"created_at" format:"date-time"`
 	UpdatedAt       time.Time                  `json:"updated_at" format:"date-time"`
@@ -89,6 +92,13 @@ type dashboardChatSessionListBody struct {
 
 type dashboardChatSessionListOutput struct{ Body dashboardChatSessionListBody }
 type noContentOutput struct{}
+
+type dashboardWebSearchEventBody struct {
+	Type    string           `json:"type" enum:"gateway.web_search.started,gateway.web_search.completed"`
+	CallID  string           `json:"call_id"`
+	Query   string           `json:"query"`
+	Results []map[string]any `json:"results,omitempty" doc:"Opaque structured search results returned by Codex"`
+}
 
 func registerDashboardChat(
 	api huma.API,
@@ -176,6 +186,7 @@ func registerDashboardChat(
 
 	responseSchema := huma.SchemaFromType(api.OpenAPI().Components.Schemas, reflect.TypeOf(responseBody{}))
 	chatSchema := huma.SchemaFromType(api.OpenAPI().Components.Schemas, reflect.TypeOf(chatCompletionBody{}))
+	webSearchEventSchema := huma.SchemaFromType(api.OpenAPI().Components.Schemas, reflect.TypeOf(dashboardWebSearchEventBody{}))
 	huma.Register(api, huma.Operation{
 		OperationID: "stream-dashboard-chat", Method: http.MethodPost, Path: "/api/chat/stream",
 		Summary: "Stream an administrator chat turn and record usage against a project.", Tags: []string{"Dashboard chat"},
@@ -183,7 +194,7 @@ func registerDashboardChat(
 			"200": {
 				Description: "A Responses or Chat Completions server-sent event stream.",
 				Content: map[string]*huma.MediaType{
-					"text/event-stream": {Schema: &huma.Schema{OneOf: []*huma.Schema{responseSchema, chatSchema}}},
+					"text/event-stream": {Schema: &huma.Schema{OneOf: []*huma.Schema{responseSchema, chatSchema, webSearchEventSchema}}},
 				},
 			},
 		},
@@ -209,7 +220,7 @@ func registerDashboardChat(
 			ConversationID: dashboardConversationID(status.Email, input.Body.SessionID), Model: input.Body.Model, Input: prompt,
 			ContinuationInput: continuationInput, Instructions: instructions,
 			ReasoningEffort: input.Body.ReasoningEffort, Messages: codexConversation(input.Body.Messages),
-			RestartConversation: input.Body.RestartSession,
+			RestartConversation: input.Body.RestartSession, EnableWebSearch: input.Body.WebSearch,
 		})
 		if err != nil {
 			return nil, codexUnavailable()
@@ -259,9 +270,10 @@ func completedDashboardChatSession(body dashboardChatRequestBody, instructions s
 		messages = append(messages, chats.Message{Role: chats.Role(message.Role), Content: strings.TrimSpace(message.Content)})
 	}
 	messages = append(messages, chats.Message{
-		Role:      chats.RoleAssistant,
-		Content:   result.Text,
-		Reasoning: result.ReasoningSummary,
+		Role:        chats.RoleAssistant,
+		Content:     result.Text,
+		Reasoning:   result.ReasoningSummary,
+		WebSearches: persistedWebSearches(result.WebSearches),
 		Usage: &chats.Usage{
 			InputTokens: result.InputTokens, CachedInputTokens: result.CachedInputTokens,
 			OutputTokens: result.OutputTokens, ReasoningOutputTokens: result.ReasoningOutputTokens,
@@ -276,6 +288,7 @@ func completedDashboardChatSession(body dashboardChatRequestBody, instructions s
 		ID: body.SessionID, Title: title, Model: model,
 		ProjectID: body.ProjectID, Endpoint: chats.Endpoint(body.Endpoint),
 		ReasoningEffort: effort, Instructions: instructions, Messages: messages,
+		WebSearch: body.WebSearch,
 	}
 }
 
@@ -298,7 +311,8 @@ func dashboardChatSessionResponse(session chats.Session) dashboardChatSessionBod
 	for _, message := range session.Messages {
 		response := dashboardChatMessageBody{
 			Role: string(message.Role), Content: message.Content,
-			Reasoning: displayReasoningSummary(message.Reasoning),
+			Reasoning:   displayReasoningSummary(message.Reasoning),
+			WebSearches: dashboardWebSearchResponses(message.WebSearches),
 		}
 		if message.Usage != nil {
 			response.Usage = &dashboardChatUsageBody{
@@ -313,8 +327,27 @@ func dashboardChatSessionResponse(session chats.Session) dashboardChatSessionBod
 		ID: session.ID, Title: session.Title, Model: session.Model, ProjectID: session.ProjectID,
 		Endpoint: string(session.Endpoint), ReasoningEffort: string(session.ReasoningEffort),
 		Instructions: session.Instructions, Messages: messages,
+		WebSearch: session.WebSearch,
 		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
 	}
+}
+
+func persistedWebSearches(searches []codex.WebSearchEvent) []chats.WebSearch {
+	result := make([]chats.WebSearch, 0, len(searches))
+	for _, search := range searches {
+		result = append(result, chats.WebSearch{CallID: search.CallID, Query: search.Query, Results: search.Results})
+	}
+	return result
+}
+
+func dashboardWebSearchResponses(searches []chats.WebSearch) []dashboardWebSearchEventBody {
+	result := make([]dashboardWebSearchEventBody, 0, len(searches))
+	for _, search := range searches {
+		result = append(result, dashboardWebSearchEventBody{
+			Type: "gateway.web_search.completed", CallID: search.CallID, Query: search.Query, Results: search.Results,
+		})
+	}
+	return result
 }
 
 func displayReasoningSummary(summary string) string {

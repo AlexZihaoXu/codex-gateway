@@ -236,6 +236,49 @@ func TestDashboardChatStreamsAndPersistsReasoningSummary(t *testing.T) {
 	}
 }
 
+func TestDashboardChatOptsIntoWebSearchAndStreamsToolLifecycle(t *testing.T) {
+	for _, endpoint := range []string{"chat-completions", "responses"} {
+		t.Run(endpoint, func(t *testing.T) {
+			searches := []codex.WebSearchEvent{{CallID: "web-call-1", Query: "current release", Results: []map[string]any{{"type": "text_result", "url": "https://example.test/release", "title": "Release", "snippet": "Current release details"}}}}
+			result := codex.GenerationResult{ID: "turn-search", Model: "gpt-5.6-luna", Text: "Verified answer", InputTokens: 12, OutputTokens: 3, TotalTokens: 15, WebSearches: searches}
+			inference := &inferenceStub{generateEvents: []codex.GenerationEvent{
+				{Type: codex.GenerationStarted, ID: "turn-search"},
+				{Type: codex.GenerationWebSearchStarted, ID: "turn-search", WebSearch: &codex.WebSearchEvent{CallID: "web-call-1", Query: "current release"}},
+				{Type: codex.GenerationWebSearchCompleted, ID: "turn-search", WebSearch: &codex.WebSearchEvent{
+					CallID: "web-call-1", Query: "current release", Output: "private model context",
+					Results: []map[string]any{{"type": "text_result", "url": "https://example.test/release", "title": "Release", "snippet": "Current release details"}},
+				}},
+				{Type: codex.GenerationDelta, ID: "turn-search", Delta: "Verified answer"},
+				{Type: codex.GenerationCompleted, ID: "turn-search", Result: &result},
+			}}
+			history := &chatHistoryStub{}
+			handler := newDashboardChatHandlerWithHistory(t, authenticatedAdministrator(), &projectServiceStub{dashboardAccess: projects.ProjectAccess{ProjectID: "prj_dashboard", APIKeyID: "key_dashboard"}}, inference, history)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, authenticatedRequest(http.MethodPost, "/api/chat/stream", `{
+				"endpoint":"`+endpoint+`", "session_id":"chat-search", "model":"gpt-5.6-luna",
+				"web_search":true, "messages":[{"role":"user","content":"Find the current release"}]
+			}`))
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("stream status = %d: %s", response.Code, response.Body.String())
+			}
+			if !inference.generateRequest.EnableWebSearch {
+				t.Fatal("dashboard chat did not enable the Codex web search tool")
+			}
+			body := response.Body.String()
+			if !strings.Contains(body, "event: gateway.web_search.started") || !strings.Contains(body, "event: gateway.web_search.completed") || !strings.Contains(body, `"query":"current release"`) || !strings.Contains(body, `"url":"https://example.test/release"`) {
+				t.Fatalf("stream omitted web search lifecycle: %s", body)
+			}
+			if strings.Contains(body, "private model context") {
+				t.Fatalf("stream exposed raw search model context: %s", body)
+			}
+			if !history.savedSession.WebSearch || len(history.savedSession.Messages) != 2 || len(history.savedSession.Messages[1].WebSearches) != 1 || history.savedSession.Messages[1].WebSearches[0].Query != "current release" {
+				t.Fatalf("web search activity was not persisted: %#v", history.savedSession)
+			}
+		})
+	}
+}
+
 func TestDashboardChatCanRestartContinuationAfterEditingHistory(t *testing.T) {
 	inference := &inferenceStub{generateEvents: completedGenerationEvents("turn-1", "Rewritten", 6, 2)}
 	handler := newDashboardChatHandler(t, authenticatedAdministrator(), &projectServiceStub{dashboardAccess: projects.ProjectAccess{ProjectID: "prj_dashboard", APIKeyID: "key_dashboard"}}, inference)

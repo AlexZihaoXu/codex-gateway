@@ -75,9 +75,11 @@ user; dashboard authorization remains Firebase-backed.
 
 ### Inference
 
-Requests use `store: false`, no tools, an explicit text-only safety instruction,
-and a structured message array. Dashboard continuation state, including opaque
-encrypted reasoning, exists only in process memory. Public calls remain stateless.
+Public `/v1/*` requests use `store: false`, no tools, an explicit text-only safety
+instruction, and a structured message array. Dashboard Chat may opt into only the
+reserved namespaced `web.run` contract. Dashboard continuation state, including
+opaque encrypted reasoning, exists only in process memory. Public calls remain
+stateless.
 
 ### Persistence and logs
 
@@ -87,7 +89,8 @@ Dashboard Chat is an explicit, user-facing exception: after a successful termina
 event, SQLite stores its visible user/assistant messages, instructions, selected
 model/project/endpoint/reasoning effort, and terminal usage under the normalized
 authenticated Google email. Partial output is not saved, and a different approved
-Google user cannot list or delete another user's conversations.
+Google user cannot list or delete another user's conversations. For web-assisted
+turns, only validated source metadata is stored; raw search output is not.
 
 Opaque encrypted reasoning and live continuation state remain process-memory only.
 OAuth credentials stay in the owner-only Codex credential store. Structured logs

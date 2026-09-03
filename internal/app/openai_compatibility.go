@@ -436,6 +436,8 @@ func streamResponse(
 				return
 			}
 			switch event.Type {
+			case codex.GenerationWebSearchStarted, codex.GenerationWebSearchCompleted:
+				writeDashboardWebSearchSSE(writer, event)
 			case codex.GenerationStarted:
 				responseID = "resp_" + event.ID
 				messageID = "msg_" + event.ID
@@ -549,6 +551,8 @@ func streamChatCompletion(
 				return
 			}
 			switch event.Type {
+			case codex.GenerationWebSearchStarted, codex.GenerationWebSearchCompleted:
+				writeDashboardWebSearchSSE(writer, event)
 			case codex.GenerationStarted:
 				completionID = "chatcmpl_" + event.ID
 				writeChatSSE(writer, map[string]any{
@@ -614,6 +618,23 @@ func writeSSE(writer io.Writer, event string, data any) {
 	if flusher, ok := writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func writeDashboardWebSearchSSE(writer io.Writer, event codex.GenerationEvent) {
+	if event.WebSearch == nil {
+		return
+	}
+	eventType := "gateway.web_search.started"
+	if event.Type == codex.GenerationWebSearchCompleted {
+		eventType = "gateway.web_search.completed"
+	}
+	body := dashboardWebSearchEventBody{
+		Type: eventType, CallID: event.WebSearch.CallID, Query: event.WebSearch.Query,
+	}
+	if event.Type == codex.GenerationWebSearchCompleted {
+		body.Results = event.WebSearch.Results
+	}
+	writeSSE(writer, eventType, body)
 }
 
 func writeChatSSE(writer io.Writer, data any) {

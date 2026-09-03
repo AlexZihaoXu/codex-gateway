@@ -20,10 +20,12 @@ func TestSessionsPersistAcrossRestartAndRemainOwnerScoped(t *testing.T) {
 	session := Session{
 		ID: "chat-session-1", Title: "First prompt", Model: "gpt-5.6-sol",
 		ProjectID: "prj_1", Endpoint: EndpointChatCompletions,
-		ReasoningEffort: ReasoningMedium, Instructions: "Be concise.",
+		ReasoningEffort: ReasoningMedium, Instructions: "Be concise.", WebSearch: true,
 		Messages: []Message{
 			{Role: RoleUser, Content: "First prompt"},
-			{Role: RoleAssistant, Content: "First answer", Reasoning: "Checked the request.", Usage: &Usage{
+			{Role: RoleAssistant, Content: "First answer", Reasoning: "Checked the request.", WebSearches: []WebSearch{{
+				CallID: "web-call-1", Query: "current release", Results: []map[string]any{{"type": "text_result", "url": "https://example.test/release", "title": "Release"}},
+			}}, Usage: &Usage{
 				InputTokens: 10, CachedInputTokens: 4, OutputTokens: 3,
 				ReasoningOutputTokens: 1, TotalTokens: 13,
 			}},
@@ -62,13 +64,13 @@ func TestSessionsPersistAcrossRestartAndRemainOwnerScoped(t *testing.T) {
 		t.Fatalf("sessions = %#v, want one", sessions)
 	}
 	stored := sessions[0]
-	if stored.ID != session.ID || stored.Title != session.Title || stored.Model != session.Model || stored.Endpoint != session.Endpoint || stored.ReasoningEffort != session.ReasoningEffort || stored.Instructions != session.Instructions || stored.ProjectID != session.ProjectID {
+	if stored.ID != session.ID || stored.Title != session.Title || stored.Model != session.Model || stored.Endpoint != session.Endpoint || stored.ReasoningEffort != session.ReasoningEffort || stored.Instructions != session.Instructions || stored.ProjectID != session.ProjectID || !stored.WebSearch {
 		t.Fatalf("stored metadata changed: %#v", stored)
 	}
 	if !stored.CreatedAt.Equal(now.Add(-time.Minute)) || !stored.UpdatedAt.Equal(now) {
 		t.Fatalf("stored timestamps = %s, %s", stored.CreatedAt, stored.UpdatedAt)
 	}
-	if len(stored.Messages) != 4 || stored.Messages[1].Reasoning != "Checked the request." || stored.Messages[1].Usage == nil || stored.Messages[1].Usage.CachedInputTokens != 4 || stored.Messages[3].Content != "Second answer" || stored.Messages[3].Usage == nil || stored.Messages[3].Usage.CachedInputTokens != 10 {
+	if len(stored.Messages) != 4 || stored.Messages[1].Reasoning != "Checked the request." || len(stored.Messages[1].WebSearches) != 1 || stored.Messages[1].WebSearches[0].Query != "current release" || stored.Messages[1].Usage == nil || stored.Messages[1].Usage.CachedInputTokens != 4 || stored.Messages[3].Content != "Second answer" || stored.Messages[3].Usage == nil || stored.Messages[3].Usage.CachedInputTokens != 10 {
 		t.Fatalf("stored messages changed: %#v", stored.Messages)
 	}
 	if err := service.RenameSession(context.Background(), "other@example.test", session.ID, "Hidden"); !errors.Is(err, ErrSessionNotFound) {

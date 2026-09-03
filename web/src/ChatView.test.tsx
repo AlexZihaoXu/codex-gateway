@@ -344,6 +344,41 @@ describe('chat playground', () => {
     pendingStream.close();
   });
 
+  it('offers web search and renders the streamed tool activity with sources', async () => {
+    const fetchMock = setupFetch(
+      vi
+        .fn()
+        .mockResolvedValue(
+          sseResponse([
+            'event: gateway.web_search.started\ndata: {"type":"gateway.web_search.started","call_id":"web-call-1","query":"current release"}\n\n',
+            'event: gateway.web_search.completed\ndata: {"type":"gateway.web_search.completed","call_id":"web-call-1","query":"current release","results":[{"type":"text_result","url":"https://example.test/release","title":"Release notes","snippet":"The current release."}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"Verified answer"}}]}\n\n',
+            'data: {"choices":[],"usage":{"prompt_tokens":8,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":0},"total_tokens":11}}\n\ndata: [DONE]\n\n',
+          ]),
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ChatView />);
+
+    await screen.findAllByText('gpt-5.6-sol');
+    const searchSwitch = screen.getByRole('switch', { name: 'Web search' });
+    expect(searchSwitch).not.toBeChecked();
+    fireEvent.click(searchSwitch);
+    fireEvent.change(screen.getByLabelText('Message'), {
+      target: { value: 'Find the current release' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByText('Verified answer')).toBeVisible();
+    const activity = screen.getByRole('button', { name: 'Searched the web: current release' });
+    expect(activity).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(activity);
+    const source = screen.getByRole('link', { name: 'Release notes' });
+    expect(source).toHaveAttribute('href', 'https://example.test/release');
+    expect(screen.getByText('The current release.')).toBeVisible();
+    expect(streamRequestBodies(fetchMock)[0]).toMatchObject({ web_search: true });
+  });
+
   it('opens a sandboxed HTML preview beside the chat and can maximize it', async () => {
     vi.stubGlobal(
       'fetch',

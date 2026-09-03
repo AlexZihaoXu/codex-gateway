@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"codex-gateway/internal/chats"
 	"codex-gateway/internal/codex"
 	"codex-gateway/internal/projects"
 )
@@ -259,6 +260,75 @@ func TestLiveStandaloneSearchThroughGateway(t *testing.T) {
 		t.Fatalf("live standalone search request was not tracked: %#v", usage)
 	}
 	t.Logf("verified standalone search with %d structured results", len(body.Results))
+}
+
+func TestLiveDashboardWebSearchStreamsPersistsAndTracksUsage(t *testing.T) {
+	if os.Getenv("CODEX_GATEWAY_LIVE_DASHBOARD_SEARCH") != "1" {
+		t.Skip("set CODEX_GATEWAY_LIVE_DASHBOARD_SEARCH=1 to run the live dashboard web search test")
+	}
+	dataDirectory := requireLiveDataDirectory(t)
+
+	startContext, cancelStart := context.WithTimeout(context.Background(), 30*time.Second)
+	inference, err := codex.Start(startContext, codex.StartOptions{Version: "integration-test", DataDirectory: dataDirectory})
+	cancelStart()
+	if err != nil {
+		t.Fatalf("start Codex transport: %v", err)
+	}
+	t.Cleanup(func() { _ = inference.Close() })
+
+	projectService, err := projects.Open(projects.Options{DataSourceName: ":memory:"})
+	if err != nil {
+		t.Fatalf("open ephemeral project service: %v", err)
+	}
+	t.Cleanup(func() { _ = projectService.Close() })
+	history, err := chats.Open(chats.Options{DataSourceName: ":memory:"})
+	if err != nil {
+		t.Fatalf("open ephemeral chat history: %v", err)
+	}
+	t.Cleanup(func() { _ = history.Close() })
+
+	handler := newDashboardChatHandlerWithHistory(t, authenticatedAdministrator(), projectService, inference, history)
+	payload := `{
+		"endpoint":"chat-completions", "session_id":"live-dashboard-search", "model":"gpt-5.6-luna",
+		"reasoning_effort":"medium", "web_search":true,
+		"messages":[{"role":"user","content":"Search the web for the official OpenAI Codex product page, then answer with its title and URL."}]
+	}`
+	requestContext, cancelRequest := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancelRequest()
+	request := authenticatedRequest(http.MethodPost, "/api/chat/stream", payload).WithContext(requestContext)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("live dashboard web search returned %d", response.Code)
+	}
+	stream := response.Body.String()
+	assertOrderedStreamMarkers(t, stream,
+		"event: gateway.web_search.started",
+		"event: gateway.web_search.completed",
+		`"content":"`,
+		`"usage":`,
+		"data: [DONE]",
+	)
+	if !strings.Contains(stream, `"cached_tokens":`) || !strings.Contains(stream, `"reasoning_tokens":`) {
+		t.Fatal("live dashboard web search omitted terminal usage details")
+	}
+
+	usage, err := projectService.UsageSummary(context.Background())
+	if err != nil {
+		t.Fatalf("read dashboard web search usage: %v", err)
+	}
+	if usage.Requests != 1 || usage.InputTokens <= 0 || usage.OutputTokens <= 0 || usage.TotalTokens != usage.InputTokens+usage.OutputTokens {
+		t.Fatalf("dashboard web search usage was not recorded consistently: %#v", usage)
+	}
+	sessions, err := history.ListSessions(context.Background(), administratorTestEmail)
+	if err != nil {
+		t.Fatalf("reload dashboard web search history: %v", err)
+	}
+	if len(sessions) != 1 || !sessions[0].WebSearch || len(sessions[0].Messages) != 2 || len(sessions[0].Messages[1].WebSearches) == 0 {
+		t.Fatalf("dashboard web search activity was not persisted: %#v", sessions)
+	}
+	t.Logf("verified dashboard web search SSE, SQLite history, and one usage record totaling %d tokens", usage.TotalTokens)
 }
 
 func streamLiveDashboardTurn(t *testing.T, handler http.Handler, body map[string]any) (string, chatUsage) {

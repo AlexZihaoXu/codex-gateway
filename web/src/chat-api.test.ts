@@ -292,6 +292,59 @@ describe('chat playground API', () => {
     );
   });
 
+  it('opts into web search and reports its real streamed lifecycle', async () => {
+    const onWebSearch = vi.fn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        sseResponse([
+          'event: gateway.web_search.started\ndata: {"type":"gateway.web_search.started","call_id":"web-call-1","query":"current release"}\n\n',
+          'event: gateway.web_search.completed\ndata: {"type":"gateway.web_search.completed","call_id":"web-call-1","query":"current release","results":[{"type":"text_result","url":"https://example.test/release","title":"Release","snippet":"Current details"}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"Verified"}}]}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":4,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":2,"completion_tokens_details":{"reasoning_tokens":0},"total_tokens":6}}\n\ndata: [DONE]\n\n',
+        ]),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      streamPlayground(
+        {
+          endpoint: 'chat-completions',
+          messages: [{ content: 'Find the current release', role: 'user' }],
+          model: 'gpt-5.6-luna',
+          reasoningEffort: 'medium',
+          sessionID: 'chat-search',
+          webSearch: true,
+        },
+        vi.fn(),
+        vi.fn(),
+        onWebSearch,
+      ),
+    ).resolves.toMatchObject({
+      text: 'Verified',
+      webSearches: [
+        {
+          callID: 'web-call-1',
+          query: 'current release',
+          status: 'completed',
+          results: [{ title: 'Release', url: 'https://example.test/release' }],
+        },
+      ],
+    });
+    expect(onWebSearch).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ callID: 'web-call-1', status: 'running' }),
+    );
+    expect(onWebSearch).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ callID: 'web-call-1', status: 'completed' }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/stream',
+      expect.objectContaining({ body: expect.stringContaining('"web_search":true') }),
+    );
+  });
+
   it('marks edited transcripts as continuation restarts', async () => {
     const fetchMock = vi
       .fn()

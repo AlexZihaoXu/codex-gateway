@@ -67,10 +67,12 @@ type Model struct {
 type GenerationEventType string
 
 const (
-	GenerationStarted        GenerationEventType = "started"
-	GenerationReasoningDelta GenerationEventType = "reasoning_delta"
-	GenerationDelta          GenerationEventType = "delta"
-	GenerationCompleted      GenerationEventType = "completed"
+	GenerationStarted            GenerationEventType = "started"
+	GenerationReasoningDelta     GenerationEventType = "reasoning_delta"
+	GenerationDelta              GenerationEventType = "delta"
+	GenerationWebSearchStarted   GenerationEventType = "web_search_started"
+	GenerationWebSearchCompleted GenerationEventType = "web_search_completed"
+	GenerationCompleted          GenerationEventType = "completed"
 )
 
 type GenerateRequest struct {
@@ -82,6 +84,7 @@ type GenerateRequest struct {
 	ReasoningEffort     string
 	Messages            []Message
 	RestartConversation bool
+	EnableWebSearch     bool
 }
 
 type Message struct {
@@ -100,14 +103,23 @@ type GenerationResult struct {
 	OutputTokens          int64
 	ReasoningOutputTokens int64
 	TotalTokens           int64
+	WebSearches           []WebSearchEvent
 }
 
 type GenerationEvent struct {
-	Type   GenerationEventType
-	ID     string
-	Delta  string
-	Result *GenerationResult
-	Err    error
+	Type      GenerationEventType
+	ID        string
+	Delta     string
+	WebSearch *WebSearchEvent
+	Result    *GenerationResult
+	Err       error
+}
+
+type WebSearchEvent struct {
+	CallID  string
+	Query   string
+	Output  string
+	Results []map[string]any
 }
 
 type Options struct {
@@ -736,9 +748,91 @@ func (client *Client) runGeneration(ctx context.Context, request GenerateRequest
 		effort = "medium"
 	}
 	instructions := generationSafetyInstructions
+	if request.EnableWebSearch {
+		instructions = "Answer using text and the web.run tool only. Use web.run for current, sourced, or otherwise unstable information. Do not call other tools, execute commands, or modify files."
+	}
 	if strings.TrimSpace(request.Instructions) != "" {
 		instructions += "\n\n" + strings.TrimSpace(request.Instructions)
 	}
+	if !emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationStarted, ID: prepared.id}) {
+		return
+	}
+	input := append([]json.RawMessage(nil), prepared.input...)
+	completedItems := make([]json.RawMessage, 0)
+	aggregate := GenerationResult{ID: prepared.id, ThreadID: prepared.threadID, Model: request.Model}
+	toolCalls := 0
+	for {
+		result, output, err := client.runResponseRound(ctx, request, credentials, prepared, input, instructions, effort, events)
+		if err != nil {
+			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: err})
+			return
+		}
+		mergeGenerationResult(&aggregate, result)
+		calls, err := parseWebSearchToolCalls(output)
+		if err != nil {
+			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: err})
+			return
+		}
+		completedItems = append(completedItems, output...)
+		if len(calls) == 0 {
+			prepared.release(true, completedItems)
+			released = true
+			emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationCompleted, ID: prepared.id, Result: &aggregate})
+			return
+		}
+		if !request.EnableWebSearch {
+			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: errors.New("Codex requested a tool while tools were disabled")})
+			return
+		}
+		toolCalls += len(calls)
+		if toolCalls > maximumWebSearchToolCalls {
+			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: errors.New("Codex exceeded the web search tool-call limit")})
+			return
+		}
+		searchInput := append([]json.RawMessage(nil), input...)
+		input = append(input, output...)
+		for _, call := range calls {
+			query := webSearchQuery(call.Arguments)
+			started := &WebSearchEvent{CallID: call.CallID, Query: query}
+			if !emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationWebSearchStarted, ID: prepared.id, WebSearch: started}) {
+				return
+			}
+			payload, err := webSearchPayload(prepared.threadID, request.Model, searchInput, call.Arguments)
+			if err != nil {
+				trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: err})
+				return
+			}
+			search, err := client.Search(ctx, payload)
+			if err != nil {
+				trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: fmt.Errorf("execute Codex web search: %w", err)})
+				return
+			}
+			completed := &WebSearchEvent{CallID: call.CallID, Query: query, Output: search.Output, Results: search.Results}
+			aggregate.WebSearches = append(aggregate.WebSearches, *completed)
+			if !emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationWebSearchCompleted, ID: prepared.id, WebSearch: completed}) {
+				return
+			}
+			callOutput, err := functionCallOutput(call.CallID, search.Output)
+			if err != nil {
+				trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: errors.New("encode Codex web search output")})
+				return
+			}
+			input = append(input, callOutput)
+			completedItems = append(completedItems, callOutput)
+		}
+	}
+}
+
+func (client *Client) runResponseRound(
+	ctx context.Context,
+	request GenerateRequest,
+	credentials storedCredentials,
+	prepared preparedGeneration,
+	input []json.RawMessage,
+	instructions string,
+	effort string,
+	events chan<- GenerationEvent,
+) (GenerationResult, []json.RawMessage, error) {
 	payload := struct {
 		Model          string            `json:"model"`
 		Input          []json.RawMessage `json:"input"`
@@ -749,53 +843,67 @@ func (client *Client) runGeneration(ctx context.Context, request GenerateRequest
 		Include        []string          `json:"include"`
 		Reasoning      map[string]string `json:"reasoning"`
 		Text           map[string]string `json:"text"`
+		Tools          []map[string]any  `json:"tools,omitempty"`
+		ToolChoice     string            `json:"tool_choice,omitempty"`
+		ParallelTools  bool              `json:"parallel_tool_calls,omitempty"`
 	}{
-		Model: request.Model, Input: prepared.input, Instructions: instructions,
+		Model: request.Model, Input: input, Instructions: instructions,
 		Stream: true, Store: false, PromptCacheKey: prepared.cacheKey,
 		Include:   []string{"reasoning.encrypted_content"},
 		Reasoning: map[string]string{"effort": effort, "summary": "auto"},
 		Text:      map[string]string{"verbosity": "low"},
 	}
+	if request.EnableWebSearch {
+		payload.Tools = []map[string]any{webSearchToolDefinition()}
+		payload.ToolChoice = "auto"
+		payload.ParallelTools = true
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: err})
-		return
+		return GenerationResult{}, nil, err
 	}
 	responseBody, websocketErr := client.openWebSocketResponse(ctx, credentials, prepared, body)
 	if websocketErr != nil || responseBody == nil {
 		upstreamRequest, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, client.responsesEndpoint, bytes.NewReader(body))
 		if requestErr != nil {
-			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: requestErr})
-			return
+			return GenerationResult{}, nil, requestErr
 		}
 		setResponseHeaders(upstreamRequest.Header, credentials, prepared.cacheKey, client.userAgent())
 		upstreamRequest.Header.Set("Accept", "text/event-stream")
 		upstreamRequest.Header.Set("Content-Type", "application/json")
 		response, requestErr := client.httpClient.Do(upstreamRequest)
 		if requestErr != nil {
-			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: errors.New("request Codex response")})
-			return
+			return GenerationResult{}, nil, errors.New("request Codex response")
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maximumJSONBytes))
 			_ = response.Body.Close()
-			trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: fmt.Errorf("Codex upstream rejected request with status %d", response.StatusCode)})
-			return
+			return GenerationResult{}, nil, fmt.Errorf("Codex upstream rejected request with status %d", response.StatusCode)
 		}
 		responseBody = response.Body
 	}
 	defer responseBody.Close()
-	if !emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationStarted, ID: prepared.id}) {
-		return
+	return parseResponseStream(ctx, responseBody, prepared.id, prepared.threadID, request.Model, events)
+}
+
+func mergeGenerationResult(aggregate *GenerationResult, current GenerationResult) {
+	if current.Model != "" {
+		aggregate.Model = current.Model
 	}
-	result, completedOutput, err := parseResponseStream(ctx, responseBody, prepared.id, prepared.threadID, request.Model, events)
-	if err != nil {
-		trySendGenerationEvent(events, GenerationEvent{ID: prepared.id, Err: err})
-		return
+	if current.Text != "" {
+		aggregate.Text += current.Text
 	}
-	prepared.release(true, completedOutput)
-	released = true
-	emitGenerationEvent(ctx, events, GenerationEvent{Type: GenerationCompleted, ID: prepared.id, Result: &result})
+	if current.ReasoningSummary != "" {
+		if aggregate.ReasoningSummary != "" {
+			aggregate.ReasoningSummary += reasoningSummaryPartSeparator(aggregate.ReasoningSummary, current.ReasoningSummary)
+		}
+		aggregate.ReasoningSummary += current.ReasoningSummary
+	}
+	aggregate.InputTokens += current.InputTokens
+	aggregate.CachedInputTokens += current.CachedInputTokens
+	aggregate.OutputTokens += current.OutputTokens
+	aggregate.ReasoningOutputTokens += current.ReasoningOutputTokens
+	aggregate.TotalTokens = aggregate.InputTokens + aggregate.OutputTokens
 }
 
 func (client *Client) openWebSocketResponse(ctx context.Context, credentials storedCredentials, prepared preparedGeneration, body []byte) (io.ReadCloser, error) {
@@ -999,6 +1107,7 @@ func parseResponseStream(ctx context.Context, reader io.Reader, id, threadID, re
 	dataLines := make([]string, 0, 1)
 	result := GenerationResult{ID: id, ThreadID: threadID, Model: requestedModel}
 	var output []json.RawMessage
+	var streamedOutput []json.RawMessage
 	terminal := false
 	lastReasoningPart := ""
 	hasReasoningPart := false
@@ -1048,6 +1157,10 @@ func parseResponseStream(ctx context.Context, reader io.Reader, id, threadID, re
 					return ctx.Err()
 				}
 			}
+		case "response.output_item.done":
+			if len(event.Item) > 0 && json.Valid(event.Item) {
+				streamedOutput = append(streamedOutput, append(json.RawMessage(nil), event.Item...))
+			}
 		case "response.completed", "response.incomplete":
 			if event.Response == nil {
 				return errors.New("Codex terminal response omitted response data")
@@ -1065,6 +1178,9 @@ func parseResponseStream(ctx context.Context, reader io.Reader, id, threadID, re
 			result.ReasoningOutputTokens = boundedSubset(usage.OutputTokensDetails.ReasoningTokens, result.OutputTokens)
 			result.TotalTokens = result.InputTokens + result.OutputTokens
 			output = append([]json.RawMessage(nil), event.Response.Output...)
+			if len(output) == 0 {
+				output = append(output, streamedOutput...)
+			}
 			if result.Text == "" {
 				result.Text = completedOutputText(output)
 			}

@@ -1,6 +1,7 @@
 build/
 coverage/
 internal/dashboard/dist/
+internal/codex/web_run_description.md
 node_modules/
 bun.lock
 go.sum

@@ -1,5 +1,6 @@
 .git
 .github
+.experiments
 .husky
 build
 coverage

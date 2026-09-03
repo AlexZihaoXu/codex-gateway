@@ -127,6 +127,59 @@ func TestLiveLunaConversationThreadReuse(t *testing.T) {
 	}
 }
 
+func TestLiveLunaWebSearchToolLoop(t *testing.T) {
+	if os.Getenv("CODEX_GATEWAY_LIVE_TEST") != "1" {
+		t.Skip("set CODEX_GATEWAY_LIVE_TEST=1 to use the locally authenticated Codex account")
+	}
+	dataDirectory := requireLiveDataDirectory(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	client, err := Start(ctx, StartOptions{Version: "integration-test", DataDirectory: dataDirectory})
+	if err != nil {
+		t.Fatalf("start Codex transport: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	events, err := client.Generate(ctx, GenerateRequest{
+		ConversationID: "live-luna-web-search-" + fmt.Sprint(time.Now().UnixNano()),
+		Model:          "gpt-5.6-luna", Input: "Search the web for the official OpenAI Codex product page, then answer with its page title and URL.",
+		ContinuationInput: "Search the web for the official OpenAI Codex product page, then answer with its page title and URL.",
+		ReasoningEffort:   "medium", EnableWebSearch: true,
+	})
+	if err != nil {
+		t.Fatalf("start live web search generation: %v", err)
+	}
+	var result *GenerationResult
+	started := 0
+	completed := 0
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("live web search generation failed: %v", event.Err)
+		}
+		switch event.Type {
+		case GenerationWebSearchStarted:
+			started++
+		case GenerationWebSearchCompleted:
+			completed++
+			if event.WebSearch == nil || strings.TrimSpace(event.WebSearch.Query) == "" {
+				t.Fatal("live web search completion omitted its query")
+			}
+		case GenerationCompleted:
+			result = event.Result
+		}
+	}
+	if started == 0 || completed != started {
+		t.Fatalf("live tool lifecycle was incomplete: started=%d completed=%d", started, completed)
+	}
+	if result == nil || strings.TrimSpace(result.Text) == "" || len(result.WebSearches) != completed {
+		t.Fatalf("live tool loop omitted the final answer or searches: %#v", result)
+	}
+	if result.InputTokens <= 0 || result.OutputTokens <= 0 || result.TotalTokens != result.InputTokens+result.OutputTokens {
+		t.Fatalf("live tool loop returned invalid aggregate usage: %#v", result)
+	}
+	t.Logf("verified Luna web tool loop with %d search call(s), input=%d cached=%d output=%d total=%d", completed, result.InputTokens, result.CachedInputTokens, result.OutputTokens, result.TotalTokens)
+}
+
 func TestLiveLunaThreeTurnDashboardScenarioMaintainsUsage(t *testing.T) {
 	if os.Getenv("CODEX_GATEWAY_LIVE_TEST") != "1" {
 		t.Skip("set CODEX_GATEWAY_LIVE_TEST=1 to use the locally authenticated Codex account")

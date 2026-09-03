@@ -21,6 +21,22 @@ export interface PlaygroundStreamResult {
   reasoning?: string;
   text: string;
   usage: PlaygroundUsage;
+  webSearches?: WebSearchActivity[];
+}
+
+export interface WebSearchResult {
+  refID?: string;
+  snippet?: string;
+  title?: string;
+  type?: string;
+  url?: string;
+}
+
+export interface WebSearchActivity {
+  callID: string;
+  query: string;
+  results: WebSearchResult[];
+  status: 'completed' | 'running';
 }
 
 export interface PersistedChatMessage {
@@ -28,6 +44,7 @@ export interface PersistedChatMessage {
   reasoning?: string;
   role: 'assistant' | 'user';
   usage?: PlaygroundUsage;
+  webSearches?: WebSearchActivity[];
 }
 
 export interface PersistedChatSession {
@@ -39,6 +56,7 @@ export interface PersistedChatSession {
   model: string;
   projectID: string;
   reasoningEffort: ReasoningEffort;
+  webSearch: boolean;
   restartSession?: boolean;
   title: string;
   updatedAt: string;
@@ -54,6 +72,7 @@ export interface PlaygroundRequest {
   sessionID: string;
   signal?: AbortSignal;
   title?: string;
+  webSearch?: boolean;
 }
 
 export async function listPlaygroundModels(signal?: AbortSignal): Promise<string[]> {
@@ -113,6 +132,7 @@ export async function streamPlayground(
   request: PlaygroundRequest,
   onDelta: (delta: string) => void,
   onReasoningDelta: (delta: string) => void = () => undefined,
+  onWebSearch: (activity: WebSearchActivity) => void = () => undefined,
 ): Promise<PlaygroundStreamResult> {
   const response = await fetch('/api/chat/stream', {
     body: JSON.stringify({
@@ -124,6 +144,7 @@ export async function streamPlayground(
       ...(request.restartSession ? { restart_session: true } : {}),
       session_id: request.sessionID,
       ...(request.title ? { title: request.title } : {}),
+      ...(request.webSearch ? { web_search: true } : {}),
     }),
     credentials: 'same-origin',
     headers: {
@@ -147,6 +168,7 @@ export async function streamPlayground(
   let text = '';
   let reasoning = '';
   let usage: PlaygroundUsage | undefined;
+  const webSearches = new Map<string, WebSearchActivity>();
 
   function consume(block: string): boolean {
     const event = parseSSEBlock(block);
@@ -160,6 +182,18 @@ export async function streamPlayground(
     }
     const streamError = parseStreamError(data);
     if (streamError) throw new Error(streamError);
+    const eventType =
+      event.name || (isRecord(data) && typeof data.type === 'string' ? data.type : '');
+    if (
+      eventType === 'gateway.web_search.started' ||
+      eventType === 'gateway.web_search.completed'
+    ) {
+      const activity = parseWebSearchActivity(data, eventType === 'gateway.web_search.completed');
+      if (!activity) throw new Error('The gateway returned malformed web search activity.');
+      webSearches.set(activity.callID, activity);
+      onWebSearch(activity);
+      return false;
+    }
 
     if (request.endpoint === 'chat-completions') {
       const reasoningDelta = parseChatReasoningDelta(data);
@@ -177,8 +211,6 @@ export async function streamPlayground(
       return false;
     }
 
-    const eventType =
-      event.name || (isRecord(data) && typeof data.type === 'string' ? data.type : '');
     if (eventType === 'response.failed') {
       throw new Error('Codex could not complete the response.');
     }
@@ -240,7 +272,54 @@ export async function streamPlayground(
   if (!usage) {
     throw new Error('The gateway response ended without terminal usage data.');
   }
-  return reasoning ? { reasoning, text, usage } : { text, usage };
+  const searches = [...webSearches.values()];
+  return {
+    ...(reasoning ? { reasoning } : {}),
+    text,
+    usage,
+    ...(searches.length > 0 ? { webSearches: searches } : {}),
+  };
+}
+
+function parseWebSearchActivity(value: unknown, completed: boolean): WebSearchActivity | undefined {
+  if (
+    !isRecord(value) ||
+    !isBoundedString(value.call_id, 256, false) ||
+    !isBoundedString(value.query, 4096, false)
+  )
+    return undefined;
+  const results = value.results === undefined ? [] : parseWebSearchResults(value.results);
+  if (!results) return undefined;
+  return {
+    callID: value.call_id,
+    query: value.query,
+    results,
+    status: completed ? 'completed' : 'running',
+  };
+}
+
+function parseWebSearchResults(value: unknown): WebSearchResult[] | undefined {
+  if (!Array.isArray(value) || value.length > 100) return undefined;
+  const results: WebSearchResult[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return undefined;
+    const result: WebSearchResult = {};
+    for (const [key, maximum] of [
+      ['type', 128],
+      ['ref_id', 256],
+      ['url', 8192],
+      ['title', 4096],
+      ['snippet', 16384],
+    ] as const) {
+      const candidate = item[key];
+      if (candidate !== undefined && !isBoundedString(candidate, maximum, true)) return undefined;
+      if (typeof candidate !== 'string') continue;
+      if (key === 'ref_id') result.refID = candidate;
+      else result[key] = candidate;
+    }
+    results.push(result);
+  }
+  return results;
 }
 
 function parseSSEBlock(block: string): { data: string; name: string } | undefined {
@@ -360,6 +439,7 @@ function parsePersistedChatSession(value: unknown): PersistedChatSession | undef
     model: value.model,
     projectID: value.project_id,
     reasoningEffort: value.reasoning_effort,
+    webSearch: value.web_search === true,
     title: value.title,
     updatedAt: value.updated_at,
   };
@@ -382,10 +462,26 @@ function parsePersistedChatMessage(value: unknown): PersistedChatMessage | undef
       : {}),
     role,
   };
+  if (value.web_searches !== undefined) {
+    const searches = parsePersistedWebSearches(value.web_searches);
+    if (!searches) return undefined;
+    base.webSearches = searches;
+  }
   if (value.usage === undefined) return base;
   const usage = parsePersistedUsage(value.usage);
   if (!usage) return undefined;
   return { ...base, usage };
+}
+
+function parsePersistedWebSearches(value: unknown): WebSearchActivity[] | undefined {
+  if (!Array.isArray(value) || value.length > 64) return undefined;
+  const searches: WebSearchActivity[] = [];
+  for (const item of value) {
+    const activity = parseWebSearchActivity(item, true);
+    if (!activity) return undefined;
+    searches.push(activity);
+  }
+  return searches;
 }
 
 function parsePersistedUsage(value: unknown): PlaygroundUsage | undefined {
