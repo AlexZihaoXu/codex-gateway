@@ -20,6 +20,14 @@ type inferenceStub struct {
 	generateRequest codex.GenerateRequest
 	generateEvents  []codex.GenerationEvent
 	generateError   error
+	searchPayload   json.RawMessage
+	searchResult    codex.SearchResult
+	searchError     error
+}
+
+func (stub *inferenceStub) Search(_ context.Context, payload json.RawMessage) (codex.SearchResult, error) {
+	stub.searchPayload = append(json.RawMessage(nil), payload...)
+	return stub.searchResult, stub.searchError
 }
 
 func (stub *inferenceStub) Models(context.Context) ([]codex.Model, error) {

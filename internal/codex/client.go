@@ -25,6 +25,7 @@ import (
 const (
 	defaultIssuer            = "https://auth.openai.com"
 	defaultResponsesEndpoint = "https://chatgpt.com/backend-api/codex/responses"
+	defaultSearchEndpoint    = "https://chatgpt.com/backend-api/codex/alpha/search"
 	defaultClientID          = "app_EMoamEEZ73f0CkXaXp7hrann"
 	credentialsFileName      = "codex-auth.json"
 	maximumJSONBytes         = 1024 * 1024
@@ -116,6 +117,7 @@ type Options struct {
 	DisableWebSockets bool
 	Issuer            string
 	ResponsesEndpoint string
+	SearchEndpoint    string
 	ClientID          string
 	Models            []Model
 	Now               func() time.Time
@@ -155,6 +157,7 @@ type Client struct {
 	disableWebSockets bool
 	issuer            string
 	responsesEndpoint string
+	searchEndpoint    string
 	clientID          string
 	version           string
 	credentialsPath   string
@@ -193,6 +196,13 @@ func New(options Options) (*Client, error) {
 	if options.ResponsesEndpoint == "" {
 		options.ResponsesEndpoint = defaultResponsesEndpoint
 	}
+	if options.SearchEndpoint == "" {
+		if options.ResponsesEndpoint == defaultResponsesEndpoint {
+			options.SearchEndpoint = defaultSearchEndpoint
+		} else {
+			options.SearchEndpoint = siblingSearchEndpoint(options.ResponsesEndpoint)
+		}
+	}
 	if options.ClientID == "" {
 		options.ClientID = defaultClientID
 	}
@@ -216,6 +226,10 @@ func New(options Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid Codex Responses endpoint: %w", err)
 	}
+	searchEndpoint, err := validateBaseURL(options.SearchEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Codex Search endpoint: %w", err)
+	}
 	if strings.TrimSpace(options.ClientID) == "" {
 		return nil, errors.New("Codex OAuth client identifier is required")
 	}
@@ -227,6 +241,7 @@ func New(options Options) (*Client, error) {
 		disableWebSockets: options.DisableWebSockets,
 		issuer:            strings.TrimRight(issuer.String(), "/"),
 		responsesEndpoint: endpoint.String(),
+		searchEndpoint:    searchEndpoint.String(),
 		clientID:          options.ClientID,
 		version:           options.Version,
 		credentialsPath:   filepath.Join(options.DataDirectory, credentialsFileName),

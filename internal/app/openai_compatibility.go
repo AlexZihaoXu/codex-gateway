@@ -22,6 +22,7 @@ const projectAPIKeySecurityScheme = "ProjectAPIKey"
 type Inference interface {
 	Models(ctx context.Context) ([]codex.Model, error)
 	Generate(ctx context.Context, request codex.GenerateRequest) (<-chan codex.GenerationEvent, error)
+	Search(ctx context.Context, payload json.RawMessage) (codex.SearchResult, error)
 }
 
 type projectAuthorizationInput struct {

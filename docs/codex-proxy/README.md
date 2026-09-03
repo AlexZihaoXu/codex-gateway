@@ -18,6 +18,7 @@ tested as if it does.
 5. [Problems encountered and their fixes](05-problems-and-fixes.md)
 6. [Testing playbook](06-testing-playbook.md)
 7. [OpenCode direct transport audit and migration decision](07-opencode-direct-transport-audit.md)
+8. [Standalone Codex search](08-standalone-codex-search.md)
 
 ## Sources of truth
 
@@ -40,6 +41,9 @@ the transport audit, then update tests before changing production parsing.
   no Codex, Node, or Bun child process runs in production.
 - Public `/v1/*` inference requires a project Bearer key. Dashboard chat requires an
   administrator session and never exposes its internal usage identity.
+- Standalone search also requires a project Bearer key. Its successful calls count
+  as project requests, but not as tokens because the upstream search response has
+  no token-usage object.
 - Inference requests are stateless (`store: false`), contain no tools, and carry only
   explicitly supplied text plus in-memory continuation state.
 - Public compatibility prompt and response content is not persisted. Dashboard

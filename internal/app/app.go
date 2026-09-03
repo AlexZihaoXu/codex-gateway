@@ -77,6 +77,7 @@ func New(options Options) (http.Handler, error) {
 	registerCodexAccount(api, options.Authentication, options.Codex)
 	registerProjectManagement(api, options.Authentication, options.Projects)
 	registerOpenAICompatibility(api, options.Projects, options.Inference, options.Clock)
+	registerStandaloneSearch(api, options.Projects, options.Inference)
 	registerDashboardChat(api, options.Authentication, options.Projects, options.ChatHistory, options.Inference, options.Clock)
 
 	mux.HandleFunc("/docs", func(response http.ResponseWriter, request *http.Request) {

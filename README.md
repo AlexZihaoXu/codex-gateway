@@ -34,6 +34,7 @@ Then open:
 
 - A single Go production process with the compiled React dashboard embedded
 - OpenAI-compatible model listing, Responses, Chat Completions, and streaming SSE routes
+- Project-scoped standalone Codex search with typed web, image, page, market, weather, sports, and time commands
 - A Go-native ChatGPT Codex OAuth client and direct Responses SSE transport
 - Browser-assisted Codex device login and account readiness status
 - Google-only Firebase authentication with an administrator account, an explicit email allowlist, and persistent local sessions
@@ -144,6 +145,15 @@ curl.exe --no-buffer http://127.0.0.1:11435/v1/chat/completions `
 
 Use <http://localhost:11435/doc> for interactive schemas and request examples.
 
+Run a standalone web search:
+
+```powershell
+curl.exe http://127.0.0.1:11435/v1/alpha/search `
+  -H "Authorization: Bearer $env:CODEX_GATEWAY_API_KEY" `
+  -H "Content-Type: application/json" `
+  -d '{"id":"my-search","model":"MODEL_FROM_V1_MODELS","commands":{"search_query":[{"q":"OpenAI Codex documentation","domains":["openai.com"]}],"response_length":"short"},"settings":{"search_context_size":"low","allowed_callers":["direct"],"external_web_access":true}}'
+```
+
 ## Compatibility scope
 
 Implemented compatibility routes:
@@ -152,11 +162,12 @@ Implemented compatibility routes:
 GET  /v1/models
 POST /v1/responses
 POST /v1/chat/completions
+POST /v1/alpha/search
 ```
 
 The current Responses API accepts string `input`, optional string `instructions`, and text streaming. Chat Completions accepts string-content `system`, `developer`, `user`, and `assistant` messages and preserves user/assistant roles as structured Responses input. Completed JSON objects include terminal usage; chat streams include usage when `stream_options.include_usage` is true. `total_tokens` is normalized to `input_tokens + output_tokens`; cached input and reasoning output are subsets of those totals and are never added a second time.
 
-Tool calls, image/audio input, structured outputs, embeddings, files, fine-tuning, and the rest of the full OpenAI API are not implemented. Unsupported fields are rejected by the typed request schema instead of being silently ignored.
+Hosted tool calls, image/audio inference input, structured outputs, embeddings, files, fine-tuning, and the rest of the full OpenAI API are not implemented. Standalone search is a separate typed Codex endpoint; it is not accepted through `/v1/responses`. Unsupported fields are rejected by the typed request schema instead of being silently ignored.
 
 Project limits use UTC-aligned fixed windows measured in minutes, hours, days, weeks, or months. Multi-unit windows such as six hours or three months are anchored consistently, weekly windows begin Monday at 00:00 UTC, and the Usage tab shows the active window and reset time for every limit. A request is rejected once any recorded window total reaches its limit; simultaneous requests can finish slightly beyond a configured budget.
 

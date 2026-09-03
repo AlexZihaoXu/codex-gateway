@@ -202,6 +202,7 @@ func TestOpenAPIDocument(t *testing.T) {
 		"/v1/models",
 		"/v1/responses",
 		"/v1/chat/completions",
+		"/v1/alpha/search",
 	} {
 		if _, ok := document.Paths[path]; !ok {
 			t.Fatalf("OpenAPI document does not contain %s", path)

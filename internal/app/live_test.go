@@ -194,6 +194,73 @@ func TestLiveDashboardLunaConversationCachingAndTotals(t *testing.T) {
 	)
 }
 
+func TestLiveStandaloneSearchThroughGateway(t *testing.T) {
+	if os.Getenv("CODEX_GATEWAY_LIVE_SEARCH") != "1" {
+		t.Skip("set CODEX_GATEWAY_LIVE_SEARCH=1 to run the live standalone search test")
+	}
+	dataDirectory := requireLiveDataDirectory(t)
+
+	startContext, cancelStart := context.WithTimeout(context.Background(), 30*time.Second)
+	inference, err := codex.Start(startContext, codex.StartOptions{
+		Version: "integration-test", DataDirectory: dataDirectory,
+	})
+	cancelStart()
+	if err != nil {
+		t.Fatalf("start Codex transport: %v", err)
+	}
+	t.Cleanup(func() { _ = inference.Close() })
+
+	projectService, err := projects.Open(projects.Options{DataSourceName: ":memory:"})
+	if err != nil {
+		t.Fatalf("open ephemeral project service: %v", err)
+	}
+	t.Cleanup(func() { _ = projectService.Close() })
+	project, err := projectService.CreateProject(context.Background(), "Live Search", nil)
+	if err != nil {
+		t.Fatalf("create live search project: %v", err)
+	}
+	key, err := projectService.CreateAPIKey(context.Background(), project.ID, "Live Search")
+	if err != nil {
+		t.Fatalf("create live search key: %v", err)
+	}
+	handler := newCompatibilityHandler(t, projectService, inference)
+	payload := `{
+		"id":"live-search-session",
+		"model":"gpt-5.6-luna",
+		"input":"Find the official OpenAI Codex source repository.",
+		"commands":{"search_query":[{"q":"OpenAI Codex official GitHub repository","domains":["github.com"]}],"response_length":"short"},
+		"settings":{"search_context_size":"low","allowed_callers":["direct"],"external_web_access":true},
+		"max_output_tokens":500
+	}`
+	requestContext, cancelRequest := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelRequest()
+	request := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(payload)).WithContext(requestContext)
+	request.Header.Set("Authorization", "Bearer "+key.Secret)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("live standalone search returned %d", response.Code)
+	}
+	var body standaloneSearchResponseBody
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode live search response: %v", err)
+	}
+	if strings.TrimSpace(body.Output) == "" && len(body.Results) == 0 {
+		t.Fatal("live standalone search returned neither output nor structured results")
+	}
+	usage, err := projectService.UsageSummary(context.Background())
+	if err != nil {
+		t.Fatalf("read live search usage: %v", err)
+	}
+	if usage.Requests != 1 || usage.TotalTokens != 0 {
+		t.Fatalf("live standalone search request was not tracked: %#v", usage)
+	}
+	t.Logf("verified standalone search with %d structured results", len(body.Results))
+}
+
 func streamLiveDashboardTurn(t *testing.T, handler http.Handler, body map[string]any) (string, chatUsage) {
 	t.Helper()
 	payload, err := json.Marshal(body)
