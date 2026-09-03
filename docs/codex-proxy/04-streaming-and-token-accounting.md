@@ -67,6 +67,11 @@ count in a live test.
 routing/cache identity. They do not report a cache hit. Only terminal
 `cached_tokens` does.
 
+Keep `prompt_cache_key` at or below the Responses API's 64-character limit. The
+dashboard uses the 64-character hexadecimal SHA-256 digest of the normalized
+owner and chat-session identifiers; adding a human-readable prefix disables
+cache reuse even when the repeated prompt itself is eligible.
+
 The Codex subscription backend currently rejects the public API's
 `prompt_cache_options` field. The gateway therefore follows OpenCode's audited
 transport: a stable key plus a persistent Responses WebSocket. A bounded handshake

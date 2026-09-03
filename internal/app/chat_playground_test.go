@@ -271,6 +271,9 @@ func TestDashboardChatPreservesAnExplicitRenamedTitleOnLaterTurns(t *testing.T) 
 
 func TestDashboardConversationIDIsStableOpaqueAndOwnerScoped(t *testing.T) {
 	first := dashboardConversationID("Alex@Example.Test", "chat-session-1")
+	if len(first) > 64 {
+		t.Fatalf("continuation key exceeds the upstream prompt_cache_key limit: got %d characters", len(first))
+	}
 	if first != dashboardConversationID(" alex@example.test ", "chat-session-1") {
 		t.Fatal("equivalent normalized owners received different continuation keys")
 	}

@@ -226,7 +226,7 @@ func registerDashboardChat(
 
 func dashboardConversationID(owner, sessionID string) string {
 	digest := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(owner)) + "\x00" + sessionID))
-	return "dashboard-" + hex.EncodeToString(digest[:])
+	return hex.EncodeToString(digest[:])
 }
 
 func latestDashboardUserInput(messages []chatMessage) (string, error) {
