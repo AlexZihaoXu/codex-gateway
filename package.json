@@ -56,7 +56,7 @@
     "lucide-react": "^1.39.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-is": "19.2.8",
+    "react-is": "19.3.0",
     "react-markdown": "^10.1.0",
     "recharts": "3.10.1",
     "rehype-highlight": "^7.0.2",
